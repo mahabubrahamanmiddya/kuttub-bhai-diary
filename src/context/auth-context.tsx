@@ -1,276 +1,169 @@
-"use client";
+'use client';
 
-import React, { createContext, useContext, useEffect, useState } from "react";
-import { isSupabaseConfigured, supabase } from "@/lib/supabase/client";
-import { Business, Profile } from "@/types/database";
-import { dataService } from "@/lib/data-service";
-
-interface User {
-  id: string;
-  email?: string;
-  name?: string;
-}
+import React, { createContext, useContext, useEffect, useState } from 'react';
+import { User, Session } from '@supabase/supabase-js';
+import { getSupabaseClient, isSupabaseConfigured } from '@/lib/supabase/client';
+import { getLocalUserId } from '@/lib/storage/offline-store';
 
 interface AuthContextType {
-  user: User | null;
-  profile: Profile | null;
-  business: Business | null;
-  isLoading: boolean;
-  isCloudConnected: boolean;
-  signIn: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
-  signUp: (data: {
-    email: string;
-    password: string;
-    name: string;
-    businessName: string;
-    phone?: string;
-  }) => Promise<{ success: boolean; error?: string }>;
+  user: User | { id: string; email: string; user_metadata?: { name?: string } } | null;
+  session: Session | null;
+  loading: boolean;
+  isConfigured: boolean;
+  signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
+  signUp: (email: string, password: string, name?: string) => Promise<{ error: Error | null; user?: any }>;
   signOut: () => Promise<void>;
-  resetPassword: (email: string) => Promise<{ success: boolean; error?: string }>;
-  refreshBusiness: () => Promise<void>;
+  enterDemoMode: (email?: string, name?: string) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const [business, setBusiness] = useState<Business | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-
-  const isCloudConnected = isSupabaseConfigured;
+  const [user, setUser] = useState<any>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [loading, setLoading] = useState(true);
+  const isConfigured = isSupabaseConfigured();
 
   useEffect(() => {
-    async function initAuth() {
-      try {
-        if (isSupabaseConfigured && supabase) {
-          const {
-            data: { session },
-          } = await supabase.auth.getSession();
-
-          if (session?.user) {
-            setUser({
-              id: session.user.id,
-              email: session.user.email,
-              name: session.user.user_metadata?.name,
-            });
-
-            const biz = await dataService.getBusiness();
-            setBusiness(biz);
-          } else {
-            setUser(null);
-            setBusiness(null);
-          }
-
-          // Listen for auth state changes
-          const {
-            data: { subscription },
-          } = supabase.auth.onAuthStateChange(async (event, currentSession) => {
-            if (currentSession?.user) {
-              setUser({
-                id: currentSession.user.id,
-                email: currentSession.user.email,
-                name: currentSession.user.user_metadata?.name,
-              });
-              const biz = await dataService.getBusiness();
-              setBusiness(biz);
-            } else {
-              setUser(null);
-              setBusiness(null);
-            }
-          });
-
-          return () => subscription.unsubscribe();
-        } else {
-          // Unconfigured demo mode: persistent local user session
-          const savedUser = localStorage.getItem("kuttub_diary_user");
-          if (savedUser) {
-            try {
-              const u = JSON.parse(savedUser);
-              setUser(u);
-              const biz = await dataService.getBusiness();
-              setBusiness(biz);
-            } catch {
-              setUser(null);
-            }
-          } else {
-            // Auto-login to default brother's business in offline / demo mode
-            const defaultUser = {
-              id: "demo-user-1",
-              email: "brother@business.in",
-              name: "Kuttub Bhai",
-            };
-            localStorage.setItem("kuttub_diary_user", JSON.stringify(defaultUser));
-            setUser(defaultUser);
-            const biz = await dataService.getBusiness();
-            setBusiness(biz);
-          }
+    if (!isConfigured) {
+      // In local mode, retrieve or create persistent local user
+      const localId = getLocalUserId();
+      const savedUser = localStorage.getItem('kuttub_diary_demo_user');
+      if (savedUser) {
+        try {
+          setUser(JSON.parse(savedUser));
+        } catch {
+          setUser({ id: localId, email: 'kuttub@diary.local', user_metadata: { name: 'Kuttub Bhai' } });
         }
-      } catch (err) {
-        console.error("Auth init error:", err);
-      } finally {
-        setIsLoading(false);
-      }
-    }
-
-    initAuth();
-  }, []);
-
-  const refreshBusiness = async () => {
-    const biz = await dataService.getBusiness();
-    setBusiness(biz);
-  };
-
-  const signIn = async (email: string, password: string) => {
-    setIsLoading(true);
-    try {
-      if (isSupabaseConfigured && supabase) {
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email: email.trim(),
-          password,
-        });
-
-        if (error) return { success: false, error: error.message };
-
-        if (data.user) {
-          setUser({
-            id: data.user.id,
-            email: data.user.email,
-            name: data.user.user_metadata?.name,
-          });
-          const biz = await dataService.getBusiness();
-          setBusiness(biz);
-        }
-        return { success: true };
       } else {
-        // Local mode login
-        const loggedUser = {
-          id: "demo-user-" + email.split("@")[0],
-          email: email.trim(),
-          name: email.split("@")[0],
-        };
-        localStorage.setItem("kuttub_diary_user", JSON.stringify(loggedUser));
-        setUser(loggedUser);
-        const biz = await dataService.getBusiness();
-        setBusiness(biz);
-        return { success: true };
+        const defaultUser = { id: localId, email: 'kuttub@diary.local', user_metadata: { name: 'Kuttub Bhai' } };
+        setUser(defaultUser);
+        localStorage.setItem('kuttub_diary_demo_user', JSON.stringify(defaultUser));
       }
-    } catch (err: any) {
-      return { success: false, error: err.message || "Failed to sign in" };
-    } finally {
-      setIsLoading(false);
+      setLoading(false);
+      return;
     }
+
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      setLoading(false);
+      return;
+    }
+
+    // Get current session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setUser(session?.user ?? null);
+      setLoading(false);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      setUser(session?.user ?? null);
+      setLoading(false);
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [isConfigured]);
+
+  const signIn = async (email: string, password: string): Promise<{ error: Error | null }> => {
+    if (!isConfigured) {
+      const demoUser = {
+        id: getLocalUserId(),
+        email,
+        user_metadata: { name: email.split('@')[0] },
+      };
+      setUser(demoUser);
+      localStorage.setItem('kuttub_diary_demo_user', JSON.stringify(demoUser));
+      return { error: null };
+    }
+
+    const supabase = getSupabaseClient();
+    if (!supabase) return { error: new Error('Supabase client not initialized') };
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    return { error: error ? new Error(error.message) : null };
   };
 
-  const signUp = async ({
-    email,
-    password,
-    name,
-    businessName,
-    phone,
-  }: {
-    email: string;
-    password: string;
-    name: string;
-    businessName: string;
-    phone?: string;
-  }) => {
-    setIsLoading(true);
-    try {
-      if (isSupabaseConfigured && supabase) {
-        const { data, error } = await supabase.auth.signUp({
-          email: email.trim(),
-          password,
-          options: {
-            data: {
-              name: name.trim(),
-              business_name: businessName.trim(),
-              phone: phone ? phone.trim() : null,
-            },
-          },
-        });
-
-        if (error) return { success: false, error: error.message };
-
-        if (data.user) {
-          setUser({
-            id: data.user.id,
-            email: data.user.email,
-            name,
-          });
-          const biz = await dataService.getBusiness();
-          setBusiness(biz);
-        }
-        return { success: true };
-      } else {
-        const newUser = {
-          id: "user-" + Date.now(),
-          email: email.trim(),
-          name: name.trim(),
-        };
-        localStorage.setItem("kuttub_diary_user", JSON.stringify(newUser));
-        const newBiz: Business = {
-          id: "biz-" + Date.now(),
-          owner_id: newUser.id,
-          business_name: businessName.trim(),
-          phone: phone || null,
-          email: email.trim(),
-          address: "",
-          currency: "INR",
-          timezone: "Asia/Kolkata",
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        };
-        await dataService.updateBusiness(newBiz);
-        setUser(newUser);
-        setBusiness(newBiz);
-        return { success: true };
-      }
-    } catch (err: any) {
-      return { success: false, error: err.message || "Signup failed" };
-    } finally {
-      setIsLoading(false);
+  const signUp = async (
+    email: string,
+    password: string,
+    name?: string
+  ): Promise<{ error: Error | null; user?: any }> => {
+    if (!isConfigured) {
+      const demoUser = {
+        id: getLocalUserId(),
+        email,
+        user_metadata: { name: name || email.split('@')[0] },
+      };
+      setUser(demoUser);
+      localStorage.setItem('kuttub_diary_demo_user', JSON.stringify(demoUser));
+      return { error: null, user: demoUser };
     }
+
+    const supabase = getSupabaseClient();
+    if (!supabase) return { error: new Error('Supabase client not initialized') };
+
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          name: name || email.split('@')[0],
+        },
+      },
+    });
+
+    return {
+      error: error ? new Error(error.message) : null,
+      user: data.user,
+    };
   };
 
-  const signOut = async () => {
-    setIsLoading(true);
-    try {
-      if (isSupabaseConfigured && supabase) {
-        await supabase.auth.signOut();
-      }
-      localStorage.removeItem("kuttub_diary_user");
+  const signOut = async (): Promise<void> => {
+    if (!isConfigured) {
       setUser(null);
-      setBusiness(null);
-    } catch (err) {
-      console.error("Signout error:", err);
-    } finally {
-      setIsLoading(false);
+      localStorage.removeItem('kuttub_diary_demo_user');
+      return;
     }
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
+    setUser(null);
+    setSession(null);
   };
 
-  const resetPassword = async (email: string) => {
-    if (isSupabaseConfigured && supabase) {
-      const { error } = await supabase.auth.resetPasswordForEmail(email.trim());
-      if (error) return { success: false, error: error.message };
-      return { success: true };
-    }
-    return { success: true };
+  const enterDemoMode = (email = 'kuttub@diary.local', name = 'Kuttub Bhai') => {
+    const demoUser = {
+      id: getLocalUserId(),
+      email,
+      user_metadata: { name },
+    };
+    setUser(demoUser);
+    localStorage.setItem('kuttub_diary_demo_user', JSON.stringify(demoUser));
   };
 
   return (
     <AuthContext.Provider
       value={{
         user,
-        profile,
-        business,
-        isLoading,
-        isCloudConnected,
+        session,
+        loading,
+        isConfigured,
         signIn,
         signUp,
         signOut,
-        resetPassword,
-        refreshBusiness,
+        enterDemoMode,
       }}
     >
       {children}
@@ -280,8 +173,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
 export function useAuth() {
   const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error("useAuth must be used within an AuthProvider");
+  if (context === undefined) {
+    throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;
 }

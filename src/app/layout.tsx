@@ -1,58 +1,46 @@
-import type { Metadata, Viewport } from "next";
-import "./globals.css";
-import { AuthProvider } from "@/context/auth-context";
-import { DiaryProvider } from "@/context/diary-context";
+import type { Metadata, Viewport } from 'next';
+import './globals.css';
+import { AuthProvider } from '@/context/auth-context';
+import { NotesProvider } from '@/context/notes-context';
+import { ServiceWorkerRegister } from '@/components/common/ServiceWorkerRegister';
 
 export const metadata: Metadata = {
-  title: "Kuttub Bhai Diary - Business Hisaab-Kitaab",
-  description:
-    "Mobile-first Business Digital Diary & Accounting Ledger for smart shop and business bookkeeping.",
-  manifest: "/manifest.json",
+  title: 'My Diary — Keep Notes & Hisaab',
+  description: 'Simple, private digital diary for business hisaab, customer notes, reminders and ideas.',
+  manifest: '/manifest.json',
+  icons: {
+    icon: '/icons/icon.svg',
+    apple: '/icons/icon-192.png',
+  },
   appleWebApp: {
     capable: true,
-    statusBarStyle: "default",
-    title: "Kuttub Diary",
-  },
-  icons: {
-    icon: "/icons/icon-192.png",
-    apple: "/icons/icon-192.png",
+    statusBarStyle: 'default',
+    title: 'My Diary',
   },
 };
 
 export const viewport: Viewport = {
-  themeColor: "#166534",
-  width: "device-width",
+  themeColor: '#F59E0B',
+  width: 'device-width',
   initialScale: 1,
   maximumScale: 1,
   userScalable: false,
-  viewportFit: "cover",
 };
 
 export default function RootLayout({
   children,
-}: Readonly<{
+}: {
   children: React.ReactNode;
-}>) {
+}) {
   return (
-    <html lang="hi" className="h-full">
-      <head>
-        <link rel="apple-touch-icon" href="/icons/icon-192.png" />
-      </head>
-      <body className="h-full antialiased font-sans bg-slate-50 text-slate-900">
+    <html lang="en" className="h-full">
+      <body className="min-h-full flex flex-col bg-paper-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 selection:bg-amber-200">
         <AuthProvider>
-          <DiaryProvider>{children}</DiaryProvider>
+          <NotesProvider>
+            <ServiceWorkerRegister />
+            {children}
+          </NotesProvider>
         </AuthProvider>
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              if ('serviceWorker' in navigator && window.location.protocol === 'https:') {
-                window.addEventListener('load', function() {
-                  navigator.serviceWorker.register('/sw.js');
-                });
-              }
-            `,
-          }}
-        />
       </body>
     </html>
   );

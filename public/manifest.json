@@ -1,12 +1,12 @@
 {
-  "name": "Kuttub Bhai Diary - Business Hisaab",
-  "short_name": "Kuttub Diary",
-  "description": "Digital business diary and ledger application for smart accounting",
-  "start_url": "/dashboard",
+  "name": "My Diary - Simple Notes",
+  "short_name": "My Diary",
+  "description": "Simple, clean personal and business digital diary",
+  "start_url": "/",
   "display": "standalone",
-  "background_color": "#0f172a",
-  "theme_color": "#166534",
-  "orientation": "portrait",
+  "background_color": "#FAF9F6",
+  "theme_color": "#F59E0B",
+  "orientation": "portrait-primary",
   "icons": [
     {
       "src": "/icons/icon-192.png",
@@ -19,10 +19,10 @@
       "type": "image/png"
     },
     {
-      "src": "/icons/icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "maskable"
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
     }
   ]
 }

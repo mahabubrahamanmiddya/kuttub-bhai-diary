@@ -1,22 +1,31 @@
-import { createBrowserClient } from "@supabase/ssr";
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 
-export const isSupabaseConfigured = Boolean(
-  supabaseUrl &&
-  supabaseAnonKey &&
-  supabaseUrl.startsWith("http") &&
-  supabaseAnonKey !== "your-anon-key-here"
-);
+export const isSupabaseConfigured = (): boolean => {
+  if (!supabaseUrl || !supabaseAnonKey) return false;
+  if (supabaseUrl.includes('placeholder-project') || supabaseUrl.includes('your-project')) return false;
+  if (supabaseAnonKey.includes('placeholder') || supabaseAnonKey.includes('your-anon-key')) return false;
+  return true;
+};
 
-export function createClient() {
-  if (!isSupabaseConfigured) {
-    // Return dummy client if not configured yet, so UI does not crash on import
+let clientInstance: SupabaseClient | null = null;
+
+export const getSupabaseClient = (): SupabaseClient | null => {
+  if (!isSupabaseConfigured()) {
     return null;
   }
 
-  return createBrowserClient(supabaseUrl, supabaseAnonKey);
-}
+  if (!clientInstance) {
+    clientInstance = createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+      },
+    });
+  }
 
-export const supabase = isSupabaseConfigured ? createBrowserClient(supabaseUrl, supabaseAnonKey) : null;
+  return clientInstance;
+};
