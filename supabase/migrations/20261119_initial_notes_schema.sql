@@ -94,7 +94,7 @@ CREATE POLICY "Users can delete own labels"
   ON public.labels FOR DELETE
   USING (auth.uid() = user_id);
 
--- Note Labels Policies
+-- Note Labels Policies (strictly validates ownership of both the note and the label)
 CREATE POLICY "Users can view own note labels"
   ON public.note_labels FOR SELECT
   USING (
@@ -102,6 +102,11 @@ CREATE POLICY "Users can view own note labels"
       SELECT 1 FROM public.notes
       WHERE notes.id = note_labels.note_id
         AND notes.user_id = auth.uid()
+    )
+    AND EXISTS (
+      SELECT 1 FROM public.labels
+      WHERE labels.id = note_labels.label_id
+        AND labels.user_id = auth.uid()
     )
   );
 
@@ -113,6 +118,38 @@ CREATE POLICY "Users can attach labels to own notes"
       WHERE notes.id = note_labels.note_id
         AND notes.user_id = auth.uid()
     )
+    AND EXISTS (
+      SELECT 1 FROM public.labels
+      WHERE labels.id = note_labels.label_id
+        AND labels.user_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "Users can update own note labels"
+  ON public.note_labels FOR UPDATE
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.notes
+      WHERE notes.id = note_labels.note_id
+        AND notes.user_id = auth.uid()
+    )
+    AND EXISTS (
+      SELECT 1 FROM public.labels
+      WHERE labels.id = note_labels.label_id
+        AND labels.user_id = auth.uid()
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.notes
+      WHERE notes.id = note_labels.note_id
+        AND notes.user_id = auth.uid()
+    )
+    AND EXISTS (
+      SELECT 1 FROM public.labels
+      WHERE labels.id = note_labels.label_id
+        AND labels.user_id = auth.uid()
+    )
   );
 
 CREATE POLICY "Users can remove labels from own notes"
@@ -123,13 +160,22 @@ CREATE POLICY "Users can remove labels from own notes"
       WHERE notes.id = note_labels.note_id
         AND notes.user_id = auth.uid()
     )
+    AND EXISTS (
+      SELECT 1 FROM public.labels
+      WHERE labels.id = note_labels.label_id
+        AND labels.user_id = auth.uid()
+    )
   );
 
 -- ==============================================================================
 -- AUTOMATIC INITIAL SETUP ON USER SIGNUP
 -- ==============================================================================
 CREATE OR REPLACE FUNCTION public.handle_new_user_setup()
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
 DECLARE
   v_biz_label UUID;
   v_cust_label UUID;
@@ -181,7 +227,7 @@ BEGIN
 
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$;
 
 -- Trigger on auth.users insert
 DROP TRIGGER IF EXISTS on_auth_user_created_diary ON auth.users;
