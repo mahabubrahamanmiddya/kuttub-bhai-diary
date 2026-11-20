@@ -26,14 +26,17 @@ CREATE INDEX IF NOT EXISTS idx_note_versions_created_at ON public.note_versions(
 -- Enable RLS on note_versions
 ALTER TABLE public.note_versions ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users can view own note versions" ON public.note_versions;
 CREATE POLICY "Users can view own note versions"
   ON public.note_versions FOR SELECT
   USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can insert own note versions" ON public.note_versions;
 CREATE POLICY "Users can insert own note versions"
   ON public.note_versions FOR INSERT
   WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can delete own note versions" ON public.note_versions;
 CREATE POLICY "Users can delete own note versions"
   ON public.note_versions FOR DELETE
   USING (auth.uid() = user_id);
@@ -62,18 +65,22 @@ CREATE INDEX IF NOT EXISTS idx_backups_checksum ON public.backups_metadata(check
 -- Enable RLS on backups_metadata
 ALTER TABLE public.backups_metadata ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users can view own backups metadata" ON public.backups_metadata;
 CREATE POLICY "Users can view own backups metadata"
   ON public.backups_metadata FOR SELECT
   USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can insert own backups metadata" ON public.backups_metadata;
 CREATE POLICY "Users can insert own backups metadata"
   ON public.backups_metadata FOR INSERT
   WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can update own backups metadata" ON public.backups_metadata;
 CREATE POLICY "Users can update own backups metadata"
   ON public.backups_metadata FOR UPDATE
   USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can delete own backups metadata" ON public.backups_metadata;
 CREATE POLICY "Users can delete own backups metadata"
   ON public.backups_metadata FOR DELETE
   USING (auth.uid() = user_id);
@@ -81,7 +88,11 @@ CREATE POLICY "Users can delete own backups metadata"
 -- 3. AUTOMATIC NOTE VERSION CHECKPOINT TRIGGER
 -- Safely saves a version checkpoint when significant edits occur (avoids keystroke spam)
 CREATE OR REPLACE FUNCTION public.handle_note_version_checkpoint()
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
 DECLARE
   v_last_version_at TIMESTAMPTZ;
   v_next_version_num INT;
@@ -131,7 +142,7 @@ BEGIN
   NEW.updated_at := timezone('utc'::text, now());
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$;
 
 DROP TRIGGER IF EXISTS trg_note_version_checkpoint ON public.notes;
 CREATE TRIGGER trg_note_version_checkpoint
