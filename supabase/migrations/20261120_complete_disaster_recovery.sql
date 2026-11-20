@@ -29,17 +29,38 @@ ALTER TABLE public.note_versions ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Users can view own note versions" ON public.note_versions;
 CREATE POLICY "Users can view own note versions"
   ON public.note_versions FOR SELECT
-  USING (auth.uid() = user_id);
+  USING (
+    auth.uid() = user_id
+    AND EXISTS (
+      SELECT 1 FROM public.notes
+      WHERE notes.id = note_versions.note_id
+        AND notes.user_id = auth.uid()
+    )
+  );
 
 DROP POLICY IF EXISTS "Users can insert own note versions" ON public.note_versions;
 CREATE POLICY "Users can insert own note versions"
   ON public.note_versions FOR INSERT
-  WITH CHECK (auth.uid() = user_id);
+  WITH CHECK (
+    auth.uid() = user_id
+    AND EXISTS (
+      SELECT 1 FROM public.notes
+      WHERE notes.id = note_versions.note_id
+        AND notes.user_id = auth.uid()
+    )
+  );
 
 DROP POLICY IF EXISTS "Users can delete own note versions" ON public.note_versions;
 CREATE POLICY "Users can delete own note versions"
   ON public.note_versions FOR DELETE
-  USING (auth.uid() = user_id);
+  USING (
+    auth.uid() = user_id
+    AND EXISTS (
+      SELECT 1 FROM public.notes
+      WHERE notes.id = note_versions.note_id
+        AND notes.user_id = auth.uid()
+    )
+  );
 
 -- 2. BACKUPS METADATA TABLE (Tracks backup integrity, history and verification)
 CREATE TABLE IF NOT EXISTS public.backups_metadata (
@@ -78,12 +99,22 @@ CREATE POLICY "Users can insert own backups metadata"
 DROP POLICY IF EXISTS "Users can update own backups metadata" ON public.backups_metadata;
 CREATE POLICY "Users can update own backups metadata"
   ON public.backups_metadata FOR UPDATE
-  USING (auth.uid() = user_id);
+  USING (
+    auth.uid() = user_id
+    AND status != 'verified'
+  )
+  WITH CHECK (
+    auth.uid() = user_id
+    AND status != 'verified'
+  );
 
 DROP POLICY IF EXISTS "Users can delete own backups metadata" ON public.backups_metadata;
 CREATE POLICY "Users can delete own backups metadata"
   ON public.backups_metadata FOR DELETE
-  USING (auth.uid() = user_id);
+  USING (
+    auth.uid() = user_id
+    AND status != 'verified'
+  );
 
 -- 3. AUTOMATIC NOTE VERSION CHECKPOINT TRIGGER
 -- Safely saves a version checkpoint when significant edits occur (avoids keystroke spam)
@@ -94,6 +125,7 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
+  v_now TIMESTAMPTZ := timezone('utc'::text, now());
   v_last_version_at TIMESTAMPTZ;
   v_next_version_num INT;
 BEGIN
@@ -112,7 +144,7 @@ BEGIN
 
     -- Only create a new checkpoint if at least 5 minutes have elapsed since last checkpoint,
     -- or if there is no previous version at all.
-    IF v_last_version_at IS NULL OR (NOW() - v_last_version_at) > INTERVAL '5 minutes' THEN
+    IF v_last_version_at IS NULL OR (v_now - v_last_version_at) > INTERVAL '5 minutes' THEN
       INSERT INTO public.note_versions (
         note_id,
         user_id,
@@ -133,13 +165,13 @@ BEGIN
         OLD.is_checklist,
         v_next_version_num,
         'Auto checkpoint before update',
-        OLD.updated_at
+        v_now
       );
     END IF;
   END IF;
 
   -- Update note updated_at timestamp
-  NEW.updated_at := timezone('utc'::text, now());
+  NEW.updated_at := v_now;
   RETURN NEW;
 END;
 $$;
