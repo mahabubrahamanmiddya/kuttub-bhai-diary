@@ -19,8 +19,11 @@ import {
   CloudOff,
   Cloud,
   Plus,
+  History,
+  RotateCcw,
+  ShieldCheck,
 } from 'lucide-react';
-import { Note, NOTE_COLORS, NoteColor, ChecklistItem, Label } from '@/types/diary';
+import { Note, NOTE_COLORS, NoteColor, ChecklistItem, Label, NoteVersion } from '@/types/diary';
 import { useNotes } from '@/context/notes-context';
 
 interface NoteEditorModalProps {
@@ -40,6 +43,9 @@ export function NoteEditorModal({ note, isOpen, onClose }: NoteEditorModalProps)
     syncStatusMessage,
     isOnline,
     labels,
+    createVersionSnapshot,
+    getVersionsForNote,
+    restoreVersion,
   } = useNotes();
 
   // Local state for instant typing responsiveness
@@ -51,6 +57,12 @@ export function NoteEditorModal({ note, isOpen, onClose }: NoteEditorModalProps)
   const [checklistItems, setChecklistItems] = useState<ChecklistItem[]>([]);
   const [reminderDate, setReminderDate] = useState<string | null>(null);
   const [noteLabels, setNoteLabels] = useState<Label[]>([]);
+
+  // Version History state
+  const [showHistory, setShowHistory] = useState(false);
+  const [versionsList, setVersionsList] = useState<NoteVersion[]>([]);
+  const [loadingVersions, setLoadingVersions] = useState(false);
+  const [versionNotice, setVersionNotice] = useState<string | null>(null);
 
   // UI pickers state
   const [showColorPicker, setShowColorPicker] = useState(false);
@@ -71,8 +83,59 @@ export function NoteEditorModal({ note, isOpen, onClose }: NoteEditorModalProps)
       setChecklistItems(note.checklist_items || []);
       setReminderDate(note.reminder_date || null);
       setNoteLabels(note.labels || []);
+      setShowHistory(false);
+      setVersionNotice(null);
     }
   }, [note?.id]);
+
+  const handleToggleHistory = async () => {
+    if (!note) return;
+    if (!showHistory) {
+      setLoadingVersions(true);
+      setShowHistory(true);
+      try {
+        const history = await getVersionsForNote(note.id);
+        setVersionsList(history);
+      } catch (e) {
+        console.error('Failed to load version history:', e);
+      } finally {
+        setLoadingVersions(false);
+      }
+    } else {
+      setShowHistory(false);
+    }
+  };
+
+  const handleCreateCheckpoint = async () => {
+    if (!note) return;
+    try {
+      await createVersionSnapshot(
+        { ...note, title, content, color, is_checklist: isChecklist, checklist_items: checklistItems },
+        'Manual user checkpoint'
+      );
+      setVersionNotice('Version checkpoint saved ✓');
+      const updated = await getVersionsForNote(note.id);
+      setVersionsList(updated);
+      setTimeout(() => setVersionNotice(null), 3000);
+    } catch (e) {
+      console.error('Failed to create checkpoint:', e);
+    }
+  };
+
+  const handleRestoreVersion = async (ver: NoteVersion) => {
+    if (!note) return;
+    if (confirm(`Restore version from ${new Date(ver.created_at).toLocaleString()}? Current content will be saved as a backup checkpoint.`)) {
+      await restoreVersion(note.id, ver);
+      setTitle(ver.title);
+      setContent(ver.content);
+      setColor(ver.color);
+      setIsChecklist(ver.is_checklist);
+      setChecklistItems(ver.checklist_items || []);
+      setShowHistory(false);
+      setVersionNotice(`Restored version from ${new Date(ver.created_at).toLocaleTimeString()}`);
+      setTimeout(() => setVersionNotice(null), 4000);
+    }
+  };
 
   // Handle auto-resizing textarea
   useEffect(() => {
@@ -307,8 +370,21 @@ export function NoteEditorModal({ note, isOpen, onClose }: NoteEditorModalProps)
             )}
           </div>
 
-          {/* Top Actions: Pin, Done / Close Button */}
-          <div className="flex items-center gap-2">
+          {/* Top Actions: Version History, Pin, Done / Close Button */}
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            <button
+              onClick={handleToggleHistory}
+              className={`p-2 rounded-xl transition-all ${
+                showHistory
+                  ? 'text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-900/50'
+                  : 'text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 hover:bg-black/5'
+              }`}
+              title="Version history & recovery checkpoints"
+              aria-label="Version history"
+            >
+              <History className="w-4 h-4" />
+            </button>
+
             <button
               onClick={handlePin}
               className={`p-2 rounded-xl transition-all ${
@@ -330,6 +406,72 @@ export function NoteEditorModal({ note, isOpen, onClose }: NoteEditorModalProps)
             </button>
           </div>
         </div>
+
+        {/* Version Notice Banner */}
+        {versionNotice && (
+          <div className="px-4 py-1.5 bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 text-xs font-medium flex items-center justify-between border-b border-emerald-200 dark:border-emerald-900">
+            <span>{versionNotice}</span>
+            <button onClick={() => setVersionNotice(null)} className="text-emerald-600 hover:text-emerald-900">×</button>
+          </div>
+        )}
+
+        {/* Version History Drawer / Overlay */}
+        {showHistory && (
+          <div className="p-4 bg-stone-50/95 dark:bg-stone-900/95 border-b border-stone-200 dark:border-stone-800 space-y-3 max-h-72 overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <History className="w-4 h-4 text-amber-500" />
+                <h4 className="text-xs font-bold uppercase tracking-wider text-stone-700 dark:text-stone-300">
+                  Version History Checkpoints
+                </h4>
+              </div>
+              <button
+                onClick={handleCreateCheckpoint}
+                className="text-xs font-semibold text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-950/60 hover:bg-amber-200 px-2.5 py-1 rounded-lg flex items-center gap-1 transition-colors"
+                title="Save a named checkpoint of the current content"
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>Save Checkpoint</span>
+              </button>
+            </div>
+
+            {loadingVersions ? (
+              <p className="text-xs text-stone-400 py-2">Loading checkpoints...</p>
+            ) : versionsList.length === 0 ? (
+              <p className="text-xs text-stone-400 italic py-2">
+                No older versions recorded yet. Versions are automatically created as you write and before restorations.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {versionsList.map((ver, idx) => (
+                  <div
+                    key={ver.id || idx}
+                    className="p-2.5 rounded-xl bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-xs flex items-center justify-between gap-3"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 font-semibold text-stone-800 dark:text-stone-200">
+                        <span>{new Date(ver.created_at).toLocaleDateString()} at {new Date(ver.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        <span className="text-[10px] font-normal px-1.5 py-0.5 rounded bg-stone-100 dark:bg-stone-700 text-stone-500">
+                          {ver.change_summary || 'Checkpoint'}
+                        </span>
+                      </div>
+                      <p className="text-stone-500 dark:text-stone-400 truncate mt-0.5">
+                        {ver.title ? `"${ver.title}" — ` : ''}{ver.content ? ver.content.slice(0, 70) : '(empty)'}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => handleRestoreVersion(ver)}
+                      className="px-2.5 py-1 rounded-lg bg-stone-100 dark:bg-stone-700 hover:bg-amber-500 hover:text-white text-stone-700 dark:text-stone-200 text-xs font-medium flex items-center gap-1 shrink-0 transition-colors"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>Restore</span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Content Area */}
         <div className="px-4 sm:px-6 py-4 flex-1 flex flex-col">

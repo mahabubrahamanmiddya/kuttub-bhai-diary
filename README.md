@@ -23,10 +23,16 @@ A simple, clean **Keep Notes + Personal Diary web app** built for daily business
   - **Trash**: Two-step deletion (Restore or Delete permanently).
   - **Labels / Categories**: Optional custom tags (Business, Customers, Expenses, Personal, Important).
 - **Instant Search**: Search instantly across titles, content (e.g. `Raju`, `5000`), and labels.
-- **Supabase PostgreSQL & Auth**:
-  - Row Level Security (RLS) ensures notes are strictly private.
-  - User A can never see User B's notes.
-  - Phone lost or browser cleared ➔ notes remain safe in PostgreSQL cloud.
+- **Three-Layer Data Protection & Disaster Recovery**:
+  - **Layer 1: IndexedDB**: Resilient local on-device database with offline editing, persistent queue, and conflict version preservation.
+  - **Layer 2: Supabase PostgreSQL**: Primary cloud database with strict Row Level Security (RLS) isolation.
+  - **Layer 3: Google Drive & GitHub Actions**: Automated daily backups to private Google Drive folder (`Digital Diary Backups`) running unattended via scheduled GitHub Actions.
+- **Backup & Recovery Center**:
+  - **Backup Now**: Instant Google Drive upload + downloadable verified `.json` file.
+  - **Backup History**: View past snapshots, sizes, note counts, and cryptographic checksums.
+  - **Safe Restoration Engine**: Restores from local JSON files or Google Drive with SHA-256 verification, Merge mode (default), or Replace mode (with automatic safety pre-backup).
+  - **Decoupled Recovery**: Restore into a completely new Supabase project even if the original database was deleted years ago!
+- **Note Version History**: Automatic and manual historical checkpoints to recover previous drafts without keystroke bloat.
 - **PWA & Offline Support**:
   - Installable on mobile phones (iOS & Android) and desktop like a native app.
   - Works offline; synchronizes seamlessly without duplicate notes when reconnected.

@@ -1,20 +1,27 @@
-import { Note, Label } from '@/types/diary';
-import { getSupabaseClient, isSupabaseConfigured } from '@/lib/supabase/client';
+import { Note, Label, NoteVersion } from '@/types/diary';
+import {
+  idbGetNotes,
+  idbSaveNotes,
+  idbUpsertNote,
+  idbDeleteNote,
+  idbGetLabels,
+  idbSaveLabels,
+  idbGetSyncQueue,
+  idbAddToSyncQueue,
+  idbRemoveFromSyncQueue,
+  idbClearSyncQueue,
+  idbSaveNoteVersion,
+  idbGetNoteVersions,
+  idbSaveBackupRecord,
+  idbGetBackupHistory,
+  idbGetMeta,
+  idbSetMeta,
+  SyncQueueItem,
+} from './indexed-db';
 
-const STORAGE_KEYS = {
-  NOTES: 'kuttub_diary_notes_v1',
-  LABELS: 'kuttub_diary_labels_v1',
-  QUEUE: 'kuttub_diary_sync_queue_v1',
-  LAST_SYNC: 'kuttub_diary_last_sync_v1',
-  OFFLINE_USER_ID: 'kuttub_diary_local_user_id',
-};
+export type { SyncQueueItem };
 
-export interface SyncQueueItem {
-  id: string;
-  action: 'UPSERT_NOTE' | 'DELETE_NOTE' | 'UPSERT_LABEL' | 'DELETE_LABEL' | 'SET_NOTE_LABELS';
-  payload: any;
-  timestamp: number;
-}
+const OFFLINE_USER_ID_KEY = 'kuttub_diary_local_user_id';
 
 // Default starter notes if the user starts fresh
 export const getStarterNotes = (userId: string): Note[] => {
@@ -24,7 +31,7 @@ export const getStarterNotes = (userId: string): Note[] => {
       id: 'starter-note-welcome',
       user_id: userId,
       title: "Welcome to My Diary 📔",
-      content: "Yeh aapki private digital diary hai. Yahan aap apna roz ka business hisaab, customer details, reminders aur personal notes aasaani se likh sakte hain.\n\n✨ Khoobiyan:\n• Likhte hi automatic save hota hai\n• Offline bhi kaam karta hai\n• Pinned notes sabse upar dikhte hain\n• Notes ko search kar sakte hain\n• Checklists aur reminders support karta hai",
+      content: "Yeh aapki private digital diary hai. Yahan aap apna roz ka business hisaab, customer details, reminders aur personal notes aasaani se likh sakte hain.\n\n✨ Khoobiyan:\n• Likhte hi automatic save hota hai\n• Offline bhi kaam karta hai\n• Pinned notes sabse upar dikhte hain\n• Notes ko search kar sakte hain\n• Checklists aur reminders support karta hai\n• Google Drive aur Cloud backup se data hamesha mehfooz rehta hai",
       color: 'sand',
       is_pinned: true,
       is_archived: false,
@@ -99,91 +106,171 @@ export const getStarterLabels = (userId: string): Label[] => [
 
 export const getLocalUserId = (): string => {
   if (typeof window === 'undefined') return 'local-user';
-  let id = localStorage.getItem(STORAGE_KEYS.OFFLINE_USER_ID);
+  let id = localStorage.getItem(OFFLINE_USER_ID_KEY);
   if (!id) {
     id = 'local-user-' + Math.random().toString(36).substring(2, 9);
-    localStorage.setItem(STORAGE_KEYS.OFFLINE_USER_ID, id);
+    localStorage.setItem(OFFLINE_USER_ID_KEY, id);
   }
   return id;
 };
 
-// Safe localStorage helpers
-export const loadLocalNotes = (userId: string): Note[] => {
-  if (typeof window === 'undefined') return [];
-  try {
-    const raw = localStorage.getItem(`${STORAGE_KEYS.NOTES}_${userId}`);
-    if (!raw) {
-      const starters = getStarterNotes(userId);
-      saveLocalNotes(userId, starters);
-      return starters;
-    }
-    return JSON.parse(raw);
-  } catch (e) {
-    console.error('Failed to load local notes:', e);
-    return [];
-  }
+// In-memory cache for synchronous instant rendering
+const memoryCache: {
+  notes: { [userId: string]: Note[] };
+  labels: { [userId: string]: Label[] };
+  queue: SyncQueueItem[];
+} = {
+  notes: {},
+  labels: {},
+  queue: [],
 };
 
-export const saveLocalNotes = (userId: string, notes: Note[]): void => {
-  if (typeof window === 'undefined') return;
+/**
+ * Initializes and hydrates from IndexedDB with transparent fallback to localStorage
+ */
+export async function initializeOfflineStore(userId: string): Promise<{ notes: Note[]; labels: Label[] }> {
   try {
-    localStorage.setItem(`${STORAGE_KEYS.NOTES}_${userId}`, JSON.stringify(notes));
+    let localNotes = await idbGetNotes(userId);
+    let localLabels = await idbGetLabels(userId);
+
+    // If IndexedDB empty, check legacy localStorage
+    if (localNotes.length === 0 && typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem(`kuttub_diary_notes_v1_${userId}`);
+        if (raw) {
+          localNotes = JSON.parse(raw);
+          // Migrate to IndexedDB
+          await idbSaveNotes(userId, localNotes);
+        }
+      } catch {}
+    }
+
+    if (localLabels.length === 0 && typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem(`kuttub_diary_labels_v1_${userId}`);
+        if (raw) {
+          localLabels = JSON.parse(raw);
+          await idbSaveLabels(userId, localLabels);
+        }
+      } catch {}
+    }
+
+    // If still empty, provision starter notes
+    if (localNotes.length === 0) {
+      localNotes = getStarterNotes(userId);
+      await idbSaveNotes(userId, localNotes);
+    }
+    if (localLabels.length === 0) {
+      localLabels = getStarterLabels(userId);
+      await idbSaveLabels(userId, localLabels);
+    }
+
+    memoryCache.notes[userId] = localNotes;
+    memoryCache.labels[userId] = localLabels;
+    memoryCache.queue = await idbGetSyncQueue();
+
+    return { notes: localNotes, labels: localLabels };
   } catch (e) {
-    console.error('Failed to save local notes:', e);
+    console.error('Failed to initialize IndexedDB offline store:', e);
+    const starters = getStarterNotes(userId);
+    const starterLabels = getStarterLabels(userId);
+    memoryCache.notes[userId] = starters;
+    memoryCache.labels[userId] = starterLabels;
+    return { notes: starters, labels: starterLabels };
   }
+}
+
+// Synchronous getter for instant UI (uses memory cache)
+export const loadLocalNotes = (userId: string): Note[] => {
+  if (memoryCache.notes[userId]) {
+    return memoryCache.notes[userId];
+  }
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(`kuttub_diary_notes_v1_${userId}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      memoryCache.notes[userId] = parsed;
+      return parsed;
+    }
+  } catch {}
+  const starters = getStarterNotes(userId);
+  memoryCache.notes[userId] = starters;
+  return starters;
+};
+
+// Asynchronous persistent note saving into IndexedDB
+export const saveLocalNotes = (userId: string, notes: Note[]): void => {
+  memoryCache.notes[userId] = notes;
+  // Save to IndexedDB (asynchronously) and localStorage fallback
+  idbSaveNotes(userId, notes).catch((err) => console.error('Error saving to IDB:', err));
 };
 
 export const loadLocalLabels = (userId: string): Label[] => {
+  if (memoryCache.labels[userId]) {
+    return memoryCache.labels[userId];
+  }
   if (typeof window === 'undefined') return [];
   try {
-    const raw = localStorage.getItem(`${STORAGE_KEYS.LABELS}_${userId}`);
-    if (!raw) {
-      const starters = getStarterLabels(userId);
-      saveLocalLabels(userId, starters);
-      return starters;
+    const raw = localStorage.getItem(`kuttub_diary_labels_v1_${userId}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      memoryCache.labels[userId] = parsed;
+      return parsed;
     }
-    return JSON.parse(raw);
-  } catch (e) {
-    console.error('Failed to load local labels:', e);
-    return [];
-  }
+  } catch {}
+  const starters = getStarterLabels(userId);
+  memoryCache.labels[userId] = starters;
+  return starters;
 };
 
 export const saveLocalLabels = (userId: string, labels: Label[]): void => {
-  if (typeof window === 'undefined') return;
-  try {
-    localStorage.setItem(`${STORAGE_KEYS.LABELS}_${userId}`, JSON.stringify(labels));
-  } catch (e) {
-    console.error('Failed to save local labels:', e);
-  }
+  memoryCache.labels[userId] = labels;
+  idbSaveLabels(userId, labels).catch((err) => console.error('Error saving labels to IDB:', err));
 };
 
 export const loadSyncQueue = (): SyncQueueItem[] => {
+  if (memoryCache.queue && memoryCache.queue.length > 0) {
+    return memoryCache.queue;
+  }
   if (typeof window === 'undefined') return [];
   try {
-    const raw = localStorage.getItem(STORAGE_KEYS.QUEUE);
+    const raw = localStorage.getItem('kuttub_diary_sync_queue_v1');
     return raw ? JSON.parse(raw) : [];
-  } catch (e) {
+  } catch {
     return [];
   }
 };
 
 export const saveSyncQueue = (queue: SyncQueueItem[]): void => {
-  if (typeof window === 'undefined') return;
+  memoryCache.queue = queue;
   try {
-    localStorage.setItem(STORAGE_KEYS.QUEUE, JSON.stringify(queue));
-  } catch (e) {}
+    localStorage.setItem('kuttub_diary_sync_queue_v1', JSON.stringify(queue));
+  } catch {}
 };
 
 export const addToSyncQueue = (item: Omit<SyncQueueItem, 'timestamp'>): void => {
-  const queue = loadSyncQueue();
-  // If an operation on the same item already exists, merge or deduplicate
-  const filtered = queue.filter((q) => !(q.id === item.id && q.action === item.action));
-  filtered.push({ ...item, timestamp: Date.now() });
+  const current = loadSyncQueue();
+  const filtered = current.filter((q) => !(q.id === item.id && q.action === item.action));
+  const fullItem: SyncQueueItem = { ...item, timestamp: Date.now() };
+  filtered.push(fullItem);
   saveSyncQueue(filtered);
+  idbAddToSyncQueue(item).catch(() => {});
 };
 
 export const clearQueueItem = (id: string, action: string): void => {
-  const queue = loadSyncQueue();
-  saveSyncQueue(queue.filter((q) => !(q.id === id && q.action === action)));
+  const current = loadSyncQueue();
+  const next = current.filter((q) => !(q.id === id && q.action === action));
+  saveSyncQueue(next);
+  idbRemoveFromSyncQueue(id, action).catch(() => {});
+};
+
+// Re-export IndexedDB version & queue methods
+export {
+  idbSaveNoteVersion,
+  idbGetNoteVersions,
+  idbSaveBackupRecord,
+  idbGetBackupHistory,
+  idbRemoveFromSyncQueue,
+  idbClearSyncQueue,
 };

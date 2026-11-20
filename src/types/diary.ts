@@ -107,6 +107,20 @@ export interface Label {
   created_at?: string;
 }
 
+export interface NoteVersion {
+  id: string;
+  note_id: string;
+  user_id: string;
+  title: string;
+  content: string;
+  color: NoteColor;
+  is_checklist: boolean;
+  checklist_items?: ChecklistItem[];
+  version_number: number;
+  change_summary?: string;
+  created_at: string;
+}
+
 export interface Note {
   id: string;
   user_id: string;
@@ -122,11 +136,22 @@ export interface Note {
   labels?: Label[];
   created_at: string;
   updated_at: string;
-  // Local synchronization metadata
+  // Synchronization & Conflict metadata
   _syncStatus?: 'synced' | 'pending' | 'conflict';
   _lastSyncedAt?: string;
+  _baseUpdatedAt?: string;
+  _isConflict?: boolean;
+  _conflictOriginal?: Partial<Note>;
 }
 
 export type ViewFilter = 'notes' | 'pinned' | 'archive' | 'trash' | { labelId: string; labelName: string };
 
-export type SyncState = 'idle' | 'saving' | 'saved' | 'saved_cloud' | 'offline' | 'error';
+export type SyncState =
+  | 'idle'
+  | 'saving'
+  | 'saved_device'
+  | 'waiting_sync'
+  | 'saved_cloud'
+  | 'offline'
+  | 'sync_failed'
+  | 'error';

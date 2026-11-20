@@ -1,17 +1,24 @@
 'use client';
 
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
-import { Note, Label, ViewFilter, SyncState, NoteColor } from '@/types/diary';
+import { Note, Label, ViewFilter, SyncState, NoteColor, NoteVersion } from '@/types/diary';
+import { RestoreOptions, RestoreResult } from '@/types/backup';
 import { useAuth } from './auth-context';
 import {
-  loadLocalNotes,
+  initializeOfflineStore,
   saveLocalNotes,
-  loadLocalLabels,
   saveLocalLabels,
   addToSyncQueue,
   loadSyncQueue,
+  idbGetNoteVersions,
 } from '@/lib/storage/offline-store';
-import { pushQueueToSupabase, fetchAllFromSupabase } from '@/lib/storage/sync-engine';
+import {
+  pushQueueToSupabase,
+  fetchAllFromSupabase,
+  mergeNotesWithConflictResolution,
+} from '@/lib/storage/sync-engine';
+import { createNoteVersionCheckpoint, getNoteVersionHistory } from '@/lib/storage/versioning';
+import { executeRestore } from '@/lib/backup/restoration';
 import { isSupabaseConfigured } from '@/lib/supabase/client';
 
 interface NotesContextType {
@@ -24,6 +31,8 @@ interface NotesContextType {
   syncState: SyncState;
   syncStatusMessage: string;
   isOnline: boolean;
+  isDatabaseConnected: boolean;
+  databaseWarning: string | null;
   activeNote: Note | null;
   setActiveNote: (note: Note | null) => void;
   isEditorOpen: boolean;
@@ -48,7 +57,13 @@ interface NotesContextType {
   deleteLabel: (id: string) => Promise<void>;
   toggleNoteLabel: (noteId: string, label: Label) => Promise<void>;
 
-  // Manual Trigger
+  // Version History
+  createVersionSnapshot: (note: Note, summary?: string) => Promise<NoteVersion>;
+  getVersionsForNote: (noteId: string) => Promise<NoteVersion[]>;
+  restoreVersion: (noteId: string, version: NoteVersion) => Promise<void>;
+
+  // Restore & Sync
+  restoreFromBackupData: (rawPayload: any, options: RestoreOptions) => Promise<RestoreResult>;
   triggerSync: () => Promise<void>;
 }
 
@@ -63,21 +78,24 @@ export function NotesProvider({ children }: { children: React.ReactNode }) {
   const [viewFilter, setViewFilter] = useState<ViewFilter>('notes');
   const [searchQuery, setSearchQuery] = useState('');
   const [syncState, setSyncState] = useState<SyncState>('idle');
-  const [syncStatusMessage, setSyncStatusMessage] = useState<string>('');
+  const [syncStatusMessage, setSyncStatusMessage] = useState<string>('Saved on device');
   const [isOnline, setIsOnline] = useState<boolean>(true);
+  const [isDatabaseConnected, setIsDatabaseConnected] = useState<boolean>(true);
+  const [databaseWarning, setDatabaseWarning] = useState<string | null>(null);
   const [activeNote, setActiveNote] = useState<Note | null>(null);
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
 
-  // Debounce ref
   const debounceTimerRef = useRef<{ [key: string]: NodeJS.Timeout }>({});
 
-  // Online / Offline listeners
+  // 1. Online / Offline listeners
   useEffect(() => {
     setIsOnline(typeof navigator !== 'undefined' ? navigator.onLine : true);
 
     const handleOnline = () => {
       setIsOnline(true);
+      setSyncState('waiting_sync');
+      setSyncStatusMessage('Waiting for synchronization');
       triggerSync();
     };
 
@@ -94,22 +112,22 @@ export function NotesProvider({ children }: { children: React.ReactNode }) {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, [userId, isConfigured]);
+  }, []);
 
-  // Load initial notes from local storage immediately (0ms instant startup)
+  // 2. Initialize from IndexedDB on startup
   useEffect(() => {
-    const localNotes = loadLocalNotes(userId);
-    const localLabels = loadLocalLabels(userId);
-    setNotes(localNotes);
-    setLabels(localLabels);
+    initializeOfflineStore(userId).then(({ notes: idbNotes, labels: idbLabels }) => {
+      setNotes(idbNotes);
+      setLabels(idbLabels);
 
-    // Initial background sync with Supabase if configured & online
-    if (isConfigured && navigator.onLine) {
-      triggerSync();
-    }
+      // Once local state is populated, attempt cloud sync if online and configured
+      if (isConfigured && navigator.onLine) {
+        triggerSync();
+      }
+    });
   }, [userId, isConfigured]);
 
-  // Sync execution
+  // 3. Robust Cloud Synchronization Engine
   const triggerSync = useCallback(async () => {
     if (!navigator.onLine) {
       setSyncState('offline');
@@ -118,9 +136,8 @@ export function NotesProvider({ children }: { children: React.ReactNode }) {
     }
 
     if (!isConfigured) {
-      // Local demo mode: everything is stored cleanly in local persistence
-      setSyncState('saved');
-      setSyncStatusMessage('Saved ✓');
+      setSyncState('saved_device');
+      setSyncStatusMessage('Saved on device');
       setTimeout(() => setSyncState('idle'), 2500);
       return;
     }
@@ -135,47 +152,49 @@ export function NotesProvider({ children }: { children: React.ReactNode }) {
       // 2. Fetch fresh notes & labels from Supabase
       const remoteData = await fetchAllFromSupabase(userId);
 
-      if (remoteData) {
-        // Merge notes: keep any local notes that have pending queue items
-        const currentQueue = loadSyncQueue();
-        const pendingNoteIds = new Set(
-          currentQueue.filter((q) => q.action === 'UPSERT_NOTE').map((q) => q.id)
-        );
+      if (remoteData.isDatabaseUnavailable) {
+        // CRITICAL PROTECTION: Database error / unavailable
+        // We NEVER clear or replace local notes!
+        setIsDatabaseConnected(false);
+        setDatabaseWarning(remoteData.error || 'Database temporarily unreachable');
+        setSyncState('waiting_sync');
+        setSyncStatusMessage('Waiting for synchronization');
+        return;
+      }
 
-        setNotes((prevLocalNotes) => {
-          const merged = [...remoteData.notes];
-          // If a note was modified locally and is pending push, keep the local version
-          prevLocalNotes.forEach((localNote) => {
-            if (pendingNoteIds.has(localNote.id)) {
-              const idx = merged.findIndex((m) => m.id === localNote.id);
-              if (idx !== -1) {
-                merged[idx] = localNote;
-              } else {
-                merged.unshift(localNote);
-              }
-            }
-          });
-          saveLocalNotes(userId, merged);
-          return merged;
-        });
+      setIsDatabaseConnected(true);
+      setDatabaseWarning(null);
+
+      if (remoteData.success && remoteData.notes && remoteData.labels) {
+        const queue = loadSyncQueue();
+        const { merged } = await mergeNotesWithConflictResolution(notes, remoteData.notes, queue);
+
+        setNotes(merged);
+        saveLocalNotes(userId, merged);
 
         if (remoteData.labels.length > 0) {
           setLabels(remoteData.labels);
           saveLocalLabels(userId, remoteData.labels);
         }
-      }
 
-      setSyncState('saved_cloud');
-      setSyncStatusMessage('Saved to cloud ✓');
-      setTimeout(() => {
-        setSyncState('idle');
-      }, 3000);
-    } catch (e) {
+        if (pushResult.failedCount > 0) {
+          setSyncState('sync_failed');
+          setSyncStatusMessage('Synchronization failed');
+        } else {
+          setSyncState('saved_cloud');
+          setSyncStatusMessage('Saved to cloud');
+          setTimeout(() => setSyncState('idle'), 3000);
+        }
+      } else {
+        setSyncState('saved_device');
+        setSyncStatusMessage('Saved on device');
+      }
+    } catch (e: any) {
       console.error('Sync failed:', e);
-      setSyncState('error');
-      setSyncStatusMessage('Sync error');
+      setSyncState('sync_failed');
+      setSyncStatusMessage('Synchronization failed');
     }
-  }, [userId, isConfigured]);
+  }, [userId, isConfigured, notes]);
 
   // Create Note
   const createNote = useCallback(
@@ -197,6 +216,7 @@ export function NotesProvider({ children }: { children: React.ReactNode }) {
         created_at: now,
         updated_at: now,
         _syncStatus: 'pending',
+        _baseUpdatedAt: now,
       };
 
       setNotes((prev) => {
@@ -205,7 +225,6 @@ export function NotesProvider({ children }: { children: React.ReactNode }) {
         return next;
       });
 
-      // Queue for Supabase sync
       addToSyncQueue({
         id: newNote.id,
         action: 'UPSERT_NOTE',
@@ -213,22 +232,24 @@ export function NotesProvider({ children }: { children: React.ReactNode }) {
       });
 
       if (!navigator.onLine) {
-        setSyncState('offline');
-        setSyncStatusMessage("Offline — changes will sync when you're back online");
+        setSyncState('saved_device');
+        setSyncStatusMessage('Saved on device');
       } else if (isConfigured) {
         setSyncState('saving');
         setSyncStatusMessage('Saving...');
-        // Sync in background
         pushQueueToSupabase(userId).then((res) => {
           if (res.success) {
             setSyncState('saved_cloud');
-            setSyncStatusMessage('Saved to cloud ✓');
+            setSyncStatusMessage('Saved to cloud');
             setTimeout(() => setSyncState('idle'), 2500);
+          } else {
+            setSyncState('waiting_sync');
+            setSyncStatusMessage('Waiting for synchronization');
           }
         });
       } else {
-        setSyncState('saved');
-        setSyncStatusMessage('Saved ✓');
+        setSyncState('saved_device');
+        setSyncStatusMessage('Saved on device');
         setTimeout(() => setSyncState('idle'), 2000);
       }
 
@@ -274,20 +295,23 @@ export function NotesProvider({ children }: { children: React.ReactNode }) {
         });
 
         if (!navigator.onLine) {
-          setSyncState('offline');
-          setSyncStatusMessage("Offline — changes will sync when you're back online");
+          setSyncState('saved_device');
+          setSyncStatusMessage('Saved on device');
         } else if (isConfigured) {
           setSyncState('saving');
           setSyncStatusMessage('Saving...');
           const res = await pushQueueToSupabase(userId);
           if (res.success) {
             setSyncState('saved_cloud');
-            setSyncStatusMessage('Saved to cloud ✓');
+            setSyncStatusMessage('Saved to cloud');
             setTimeout(() => setSyncState('idle'), 2500);
+          } else {
+            setSyncState('waiting_sync');
+            setSyncStatusMessage('Waiting for synchronization');
           }
         } else {
-          setSyncState('saved');
-          setSyncStatusMessage('Saved ✓');
+          setSyncState('saved_device');
+          setSyncStatusMessage('Saved on device');
           setTimeout(() => setSyncState('idle'), 2000);
         }
       }
@@ -295,14 +319,12 @@ export function NotesProvider({ children }: { children: React.ReactNode }) {
     [userId, isConfigured, activeNote]
   );
 
-  // Debounced auto-save while typing in Keep Notes style editor
+  // Debounced auto-save while typing
   const saveNoteDebounced = useCallback(
     async (noteId: string, updates: Partial<Note>): Promise<void> => {
-      // Show "Saving..." indicator immediately on keystroke
       setSyncState('saving');
       setSyncStatusMessage('Saving...');
 
-      // Optimistically update in state so UI is instant
       const now = new Date().toISOString();
       setNotes((prev) => {
         const next = prev.map((n) => {
@@ -319,12 +341,10 @@ export function NotesProvider({ children }: { children: React.ReactNode }) {
         return next;
       });
 
-      // Clear existing debounce timer for this note
       if (debounceTimerRef.current[noteId]) {
         clearTimeout(debounceTimerRef.current[noteId]);
       }
 
-      // Debounce saving to cloud / storage by 600ms
       debounceTimerRef.current[noteId] = setTimeout(async () => {
         await saveNoteImmediate(noteId, updates);
         delete debounceTimerRef.current[noteId];
@@ -333,7 +353,7 @@ export function NotesProvider({ children }: { children: React.ReactNode }) {
     [userId, activeNote, saveNoteImmediate]
   );
 
-  // Delete note (move to trash)
+  // Delete note (to trash)
   const deleteNote = useCallback(
     async (id: string): Promise<void> => {
       await saveNoteImmediate(id, { is_deleted: true, is_pinned: false });
@@ -469,7 +489,6 @@ export function NotesProvider({ children }: { children: React.ReactNode }) {
         return next;
       });
 
-      // Remove this label from all notes locally
       setNotes((prev) => {
         const next = prev.map((n) => ({
           ...n,
@@ -509,6 +528,57 @@ export function NotesProvider({ children }: { children: React.ReactNode }) {
     [notes, saveNoteImmediate]
   );
 
+  // Version Snapshots
+  const createVersionSnapshot = useCallback(
+    async (note: Note, summary?: string): Promise<NoteVersion> => {
+      return await createNoteVersionCheckpoint(note, summary);
+    },
+    []
+  );
+
+  const getVersionsForNote = useCallback(async (noteId: string): Promise<NoteVersion[]> => {
+    return await getNoteVersionHistory(noteId);
+  }, []);
+
+  const restoreVersion = useCallback(
+    async (noteId: string, version: NoteVersion): Promise<void> => {
+      const current = notes.find((n) => n.id === noteId);
+      if (current) {
+        // Save current state as safety checkpoint before restoring older version
+        await createNoteVersionCheckpoint(current, 'Pre-restore automatic checkpoint');
+      }
+
+      await saveNoteImmediate(noteId, {
+        title: version.title,
+        content: version.content,
+        color: version.color,
+        is_checklist: version.is_checklist,
+        checklist_items: version.checklist_items,
+      });
+    },
+    [notes, saveNoteImmediate]
+  );
+
+  // Execute Restore from Backup Payload
+  const restoreFromBackupData = useCallback(
+    async (rawPayload: any, options: RestoreOptions): Promise<RestoreResult> => {
+      const result = await executeRestore(rawPayload, notes, labels, userId, options);
+      if (result.success) {
+        // Reload from local storage
+        const { notes: reloadedNotes, labels: reloadedLabels } = await initializeOfflineStore(userId);
+        setNotes(reloadedNotes);
+        setLabels(reloadedLabels);
+
+        // Queue sync to cloud
+        if (isConfigured && navigator.onLine) {
+          triggerSync();
+        }
+      }
+      return result;
+    },
+    [notes, labels, userId, isConfigured, triggerSync]
+  );
+
   return (
     <NotesContext.Provider
       value={{
@@ -521,6 +591,8 @@ export function NotesProvider({ children }: { children: React.ReactNode }) {
         syncState,
         syncStatusMessage,
         isOnline,
+        isDatabaseConnected,
+        databaseWarning,
         activeNote,
         setActiveNote,
         isEditorOpen,
@@ -540,6 +612,10 @@ export function NotesProvider({ children }: { children: React.ReactNode }) {
         createLabel,
         deleteLabel,
         toggleNoteLabel,
+        createVersionSnapshot,
+        getVersionsForNote,
+        restoreVersion,
+        restoreFromBackupData,
         triggerSync,
       }}
     >

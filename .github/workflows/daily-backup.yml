@@ -1,0 +1,32 @@
+name: Daily Digital Diary Backup
+
+on:
+  schedule:
+    # Runs daily at 02:00 UTC (07:30 IST) unattended
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    # Allows manual trigger button in GitHub Actions tab anytime
+
+jobs:
+  backup:
+    name: Execute Daily Google Drive Backup
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Execute Automated Backup to Google Drive
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+          GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+          GOOGLE_PRIVATE_KEY: ${{ secrets.GOOGLE_PRIVATE_KEY }}
+        run: |
+          node scripts/run-daily-backup.mjs

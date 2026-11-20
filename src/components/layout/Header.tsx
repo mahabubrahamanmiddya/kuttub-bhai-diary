@@ -33,6 +33,7 @@ export function Header({ onToggleSidebar, onOpenSettings, onOpenAuth }: HeaderPr
     syncState,
     syncStatusMessage,
     isOnline,
+    databaseWarning,
     viewMode,
     setViewMode,
     triggerSync,
@@ -96,14 +97,20 @@ export function Header({ onToggleSidebar, onOpenSettings, onOpenAuth }: HeaderPr
           {/* Sync indicator */}
           <button
             onClick={() => triggerSync()}
-            title={syncStatusMessage || (isOnline ? 'Synced' : 'Offline')}
+            title={databaseWarning || syncStatusMessage || (isOnline ? 'Synced' : 'Offline')}
             className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
               syncState === 'saving'
                 ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400'
-                : syncState === 'offline' || !isOnline
+                : syncState === 'sync_failed'
+                ? 'bg-rose-100 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300'
+                : syncState === 'waiting_sync' || databaseWarning
                 ? 'bg-amber-100/70 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300'
-                : syncState === 'saved_cloud' || syncState === 'saved'
+                : syncState === 'offline' || !isOnline
+                ? 'bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300'
+                : syncState === 'saved_cloud'
                 ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400'
+                : syncState === 'saved_device'
+                ? 'bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300'
                 : 'text-stone-500 hover:bg-stone-100 dark:hover:bg-stone-800'
             }`}
           >
@@ -112,25 +119,35 @@ export function Header({ onToggleSidebar, onOpenSettings, onOpenAuth }: HeaderPr
                 <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                 <span className="hidden md:inline">Saving...</span>
               </>
+            ) : syncState === 'sync_failed' ? (
+              <>
+                <CloudOff className="w-3.5 h-3.5 text-rose-600" />
+                <span className="hidden md:inline">Synchronization failed</span>
+              </>
+            ) : syncState === 'waiting_sync' || databaseWarning ? (
+              <>
+                <Cloud className="w-3.5 h-3.5 text-amber-600 animate-pulse" />
+                <span className="hidden md:inline">Waiting for synchronization</span>
+              </>
             ) : !isOnline || syncState === 'offline' ? (
               <>
-                <CloudOff className="w-3.5 h-3.5 text-amber-600" />
-                <span className="hidden md:inline">Offline</span>
+                <CloudOff className="w-3.5 h-3.5 text-stone-500" />
+                <span className="hidden md:inline">Saved on device (Offline)</span>
               </>
             ) : syncState === 'saved_cloud' ? (
               <>
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                <span className="hidden md:inline">Saved to cloud ✓</span>
+                <span className="hidden md:inline">Saved to cloud</span>
               </>
-            ) : syncState === 'saved' ? (
+            ) : syncState === 'saved_device' ? (
               <>
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                <span className="hidden md:inline">Saved ✓</span>
+                <CheckCircle2 className="w-3.5 h-3.5 text-sky-600" />
+                <span className="hidden md:inline">Saved on device</span>
               </>
             ) : (
               <>
                 <Cloud className="w-3.5 h-3.5 text-stone-400" />
-                <span className="hidden lg:inline">Cloud Active</span>
+                <span className="hidden lg:inline">Saved on device</span>
               </>
             )}
           </button>
