@@ -37,7 +37,10 @@ export async function POST(req: NextRequest) {
 
         // Record in Supabase backups_metadata if configured
         const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-        const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+        const serviceKey =
+          process.env.SUPABASE_SERVICE_ROLE_KEY ||
+          process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
         if (supabaseUrl && serviceKey && userId) {
           const supabase = createClient(supabaseUrl, serviceKey);
           await supabase.from('backups_metadata').insert({
