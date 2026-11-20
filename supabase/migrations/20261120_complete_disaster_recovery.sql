@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS public.note_versions (
   is_checklist BOOLEAN NOT NULL DEFAULT false,
   version_number INT NOT NULL DEFAULT 1,
   change_summary TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Indexes for fast version lookups
@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS public.backups_metadata (
   status TEXT NOT NULL CHECK (status IN ('verified', 'success', 'failed')),
   drive_file_id TEXT,
   details JSONB DEFAULT '{}'::jsonb,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Indexes for backup history
@@ -94,7 +94,10 @@ CREATE POLICY "Users can view own backups metadata"
 DROP POLICY IF EXISTS "Users can insert own backups metadata" ON public.backups_metadata;
 CREATE POLICY "Users can insert own backups metadata"
   ON public.backups_metadata FOR INSERT
-  WITH CHECK (auth.uid() = user_id);
+  WITH CHECK (
+    auth.uid() = user_id
+    AND status != 'verified'
+  );
 
 DROP POLICY IF EXISTS "Users can update own backups metadata" ON public.backups_metadata;
 CREATE POLICY "Users can update own backups metadata"
@@ -125,7 +128,7 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
-  v_now TIMESTAMPTZ := timezone('utc'::text, now());
+  v_now TIMESTAMPTZ := now();
   v_last_version_at TIMESTAMPTZ;
   v_next_version_num INT;
 BEGIN
