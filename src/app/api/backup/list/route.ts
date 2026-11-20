@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { listDriveBackups, isGoogleDriveConfigured } from '@/lib/backup/google-drive';
+import { listDriveBackups, checkGoogleDriveStatus, isGoogleDriveConfigured } from '@/lib/backup/google-drive';
 import { createClient } from '@supabase/supabase-js';
 
 export const dynamic = 'force-dynamic';
@@ -7,10 +7,10 @@ export const runtime = 'nodejs';
 
 export async function GET(req: NextRequest) {
   try {
-    const isDriveReady = isGoogleDriveConfigured();
+    const driveStatus = await checkGoogleDriveStatus();
     let driveBackups: any[] = [];
 
-    if (isDriveReady) {
+    if (driveStatus.authorized) {
       try {
         driveBackups = await listDriveBackups();
       } catch (err: any) {
@@ -35,7 +35,9 @@ export async function GET(req: NextRequest) {
     }
 
     return NextResponse.json({
-      googleDriveConfigured: isDriveReady,
+      googleDriveConfigured: driveStatus.configured,
+      googleDriveAuthorized: driveStatus.authorized,
+      googleDriveStatus: driveStatus,
       driveBackups,
       dbBackups,
     });

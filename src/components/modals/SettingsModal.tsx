@@ -53,6 +53,7 @@ export function SettingsModal({ isOpen, onClose, onOpenAuth }: SettingsModalProp
   const [lastSyncTime, setLastSyncTime] = useState<string>('Just now');
   const [lastBackupInfo, setLastBackupInfo] = useState<{ date: string; destination: string; count: number } | null>(null);
   const [isDriveConfigured, setIsDriveConfigured] = useState<boolean>(false);
+  const [driveStatus, setDriveStatus] = useState<any>(null);
   const [loadingDriveStatus, setLoadingDriveStatus] = useState<boolean>(true);
 
   // Backup In Progress
@@ -85,11 +86,13 @@ export function SettingsModal({ isOpen, onClose, onOpenAuth }: SettingsModalProp
       fetch('/api/backup/list')
         .then((res) => res.json())
         .then((data) => {
-          setIsDriveConfigured(Boolean(data.googleDriveConfigured));
+          setIsDriveConfigured(Boolean(data.googleDriveConfigured && data.googleDriveAuthorized));
+          setDriveStatus(data.googleDriveStatus || null);
           setLoadingDriveStatus(false);
         })
         .catch(() => {
           setIsDriveConfigured(false);
+          setDriveStatus(null);
           setLoadingDriveStatus(false);
         });
 
@@ -504,17 +507,39 @@ export function SettingsModal({ isOpen, onClose, onOpenAuth }: SettingsModalProp
 
                 {/* 4. Google Drive Status */}
                 <div className="p-2.5 rounded-xl bg-white dark:bg-stone-900 border border-stone-200/60 dark:border-stone-700/60">
-                  <span className="text-stone-400 block text-[11px]">Google Drive Destination:</span>
+                  <div className="flex items-center justify-between">
+                    <span className="text-stone-400 block text-[11px]">Google Drive Destination:</span>
+                    {driveStatus?.code === 'EXPIRED_OR_REVOKED' ? (
+                      <a
+                        href="/api/auth/google/authorize"
+                        className="text-[10px] font-bold text-amber-600 hover:underline flex items-center gap-0.5"
+                      >
+                        Re-authorize ↗
+                      </a>
+                    ) : !isDriveConfigured ? (
+                      <a
+                        href="/api/auth/google/authorize"
+                        className="text-[10px] font-bold text-amber-600 hover:underline flex items-center gap-0.5"
+                      >
+                        Connect ↗
+                      </a>
+                    ) : null}
+                  </div>
                   <span className="font-semibold text-stone-800 dark:text-stone-200 flex items-center gap-1 mt-0.5">
-                    {isDriveConfigured ? (
+                    {driveStatus?.code === 'AUTHENTICATED' ? (
                       <>
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                        <span>Connected (&quot;Digital Diary Backups&quot;)</span>
+                        <span className="truncate">Connected (&quot;Digital Diary Backups&quot;)</span>
+                      </>
+                    ) : driveStatus?.code === 'EXPIRED_OR_REVOKED' ? (
+                      <>
+                        <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />
+                        <span className="text-rose-600 dark:text-rose-400">Authorization Expired</span>
                       </>
                     ) : (
                       <>
                         <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
-                        <span>Ready (Add credentials in Secrets)</span>
+                        <span>Ready (Connect Google Drive)</span>
                       </>
                     )}
                   </span>

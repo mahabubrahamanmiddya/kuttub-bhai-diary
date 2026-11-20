@@ -27,7 +27,24 @@ Go to: **GitHub Repository** > **Settings** > **Secrets and variables** > **Acti
 | :--- | :--- | :--- |
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase Project URL | Supabase Dashboard > Settings > API |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase Service Role Key | Supabase Dashboard > Settings > API > `service_role` (Secret) |
-| `GOOGLE_SERVICE_ACCOUNT_KEY` | Entire Google Service Account JSON | Downloaded JSON file from Google Cloud IAM |
+| `GOOGLE_CLIENT_ID` | Google OAuth 2.0 Web Client ID | Google Cloud Console > APIs & Services > Credentials |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 Web Client Secret | Google Cloud Console > APIs & Services > Credentials |
+| `GOOGLE_REFRESH_TOKEN` | Google Drive Offline Refresh Token | Generated via `node scripts/get-google-refresh-token.mjs` or `/api/auth/google/authorize` |
+
+> [!NOTE]
+> **Why OAuth 2.0 instead of a Service Account?**
+> Standard Google Service Accounts do not share storage quota with personal `@gmail.com` accounts on the free tier. Google OAuth 2.0 with an offline refresh token writes backups directly to your personal Google Drive storage (15 GB free tier) into a dedicated `Digital Diary Backups` folder.
+
+---
+
+## ⚠️ GitHub Actions Inactivity Notice & Token Longevity
+
+1. **GitHub Inactivity Rule**: GitHub automatically disables scheduled cron actions on public/private repositories if there has been no commit activity for **60 consecutive days**.
+   - GitHub will send you an email alert before pausing.
+   - Simply click the link in the GitHub email or click **Actions > Enable workflow** in your repository to resume, or make any commit.
+2. **Google OAuth Token Longevity**:
+   - Ensure your Google Cloud OAuth Consent Screen is set to **"In production"** (see [Google Drive Setup Guide](./GOOGLE_DRIVE_SETUP_GUIDE.md)). If left in "Testing" mode, Google will expire the refresh token after 7 days.
+   - Google refreshes the token on every backup run, easily preventing the 6-month inactivity expiration.
 
 ---
 

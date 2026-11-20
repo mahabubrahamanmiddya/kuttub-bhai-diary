@@ -1,8 +1,7 @@
-import crypto from 'crypto';
-
 const FOLDER_NAME = 'Digital Diary Backups';
 const DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
 const UPLOAD_API_BASE = 'https://www.googleapis.com/upload/drive/v3';
+const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 
 export interface GoogleDriveFile {
   id: string;
@@ -13,53 +12,49 @@ export interface GoogleDriveFile {
   md5Checksum?: string;
 }
 
-export interface GoogleDriveConfig {
-  serviceAccountEmail?: string;
-  privateKey?: string;
-  refreshToken?: string;
-  clientId?: string;
-  clientSecret?: string;
+export interface GoogleDriveOAuthCredentials {
+  clientId: string;
+  clientSecret: string;
+  refreshToken: string;
 }
 
+export interface GoogleDriveStatus {
+  configured: boolean;
+  authorized: boolean;
+  code: 'AUTHENTICATED' | 'NOT_CONFIGURED' | 'EXPIRED_OR_REVOKED' | 'NETWORK_ERROR';
+  message: string;
+}
+
+export class GoogleAuthError extends Error {
+  isExpiredOrRevoked: boolean;
+  statusCode?: number;
+
+  constructor(message: string, isExpiredOrRevoked = false, statusCode?: number) {
+    super(message);
+    this.name = 'GoogleAuthError';
+    this.isExpiredOrRevoked = isExpiredOrRevoked;
+    this.statusCode = statusCode;
+  }
+}
+
+// In-memory token cache to avoid refreshing access token on every single request
+let cachedAccessToken: string | null = null;
+let tokenExpiresAt = 0;
+
 /**
- * Reads Google Drive credentials from environment variables.
+ * Reads Google OAuth 2.0 credentials from environment variables.
+ * Safe for server-side execution only.
  */
-export function getGoogleDriveConfig(): GoogleDriveConfig | null {
-  // 1. Service Account JSON key (entire JSON string)
-  const serviceAccountJson = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
-  if (serviceAccountJson) {
-    try {
-      const parsed = JSON.parse(serviceAccountJson);
-      return {
-        serviceAccountEmail: parsed.client_email,
-        privateKey: parsed.private_key,
-      };
-    } catch (e) {
-      console.error('Invalid GOOGLE_SERVICE_ACCOUNT_KEY JSON format:', e);
-    }
-  }
-
-  // 2. Individual Service Account variables
-  const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-  let key = process.env.GOOGLE_PRIVATE_KEY;
-  if (email && key) {
-    // Handle escaped newlines
-    key = key.replace(/\\n/g, '\n');
-    return {
-      serviceAccountEmail: email,
-      privateKey: key,
-    };
-  }
-
-  // 3. User OAuth2 Refresh Token
-  const refreshToken = process.env.GOOGLE_DRIVE_REFRESH_TOKEN;
+export function getGoogleOAuthCredentials(): GoogleDriveOAuthCredentials | null {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  if (refreshToken && clientId && clientSecret) {
+  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN || process.env.GOOGLE_DRIVE_REFRESH_TOKEN;
+
+  if (clientId && clientSecret && refreshToken) {
     return {
-      refreshToken,
-      clientId,
-      clientSecret,
+      clientId: clientId.trim(),
+      clientSecret: clientSecret.trim(),
+      refreshToken: refreshToken.trim(),
     };
   }
 
@@ -67,94 +62,144 @@ export function getGoogleDriveConfig(): GoogleDriveConfig | null {
 }
 
 /**
- * Determines whether Google Drive integration is configured.
+ * Checks if Google Drive OAuth 2.0 credentials are configured.
  */
 export function isGoogleDriveConfigured(): boolean {
-  return getGoogleDriveConfig() !== null;
+  return getGoogleOAuthCredentials() !== null;
 }
 
 /**
- * Obtains an OAuth2 access token for Google Drive API.
+ * Refreshes and returns a valid Google Drive API access token using the stored refresh token.
+ * Detects expired or revoked authorization (invalid_grant) and caches valid tokens.
  */
-async function getAccessToken(config: GoogleDriveConfig): Promise<string> {
-  // Option A: Service Account (RS256 JWT Bearer Grant)
-  if (config.serviceAccountEmail && config.privateKey) {
-    const now = Math.floor(Date.now() / 1000);
-    const header = { alg: 'RS256', typ: 'JWT' };
-    const claimSet = {
-      iss: config.serviceAccountEmail,
-      scope: 'https://www.googleapis.com/auth/drive.file',
-      aud: 'https://oauth2.googleapis.com/token',
-      exp: now + 3600,
-      iat: now,
-    };
-
-    const base64UrlEncode = (str: string) =>
-      Buffer.from(str)
-        .toString('base64')
-        .replace(/=/g, '')
-        .replace(/\+/g, '-')
-        .replace(/\//g, '_');
-
-    const encodedHeader = base64UrlEncode(JSON.stringify(header));
-    const encodedClaimSet = base64UrlEncode(JSON.stringify(claimSet));
-    const unsignedJwt = `${encodedHeader}.${encodedClaimSet}`;
-
-    const signer = crypto.createSign('RSA-SHA256');
-    signer.update(unsignedJwt);
-    signer.end();
-    const signature = signer.sign(config.privateKey, 'base64')
-      .replace(/=/g, '')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_');
-
-    const signedJwt = `${unsignedJwt}.${signature}`;
-
-    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-        assertion: signedJwt,
-      }),
-    });
-
-    if (!tokenResponse.ok) {
-      const errText = await tokenResponse.text();
-      throw new Error(`Failed to authenticate with Google: ${errText}`);
-    }
-
-    const data = await tokenResponse.json();
-    return data.access_token;
+export async function getFreshAccessToken(forceRefresh = false): Promise<string> {
+  const creds = getGoogleOAuthCredentials();
+  if (!creds) {
+    throw new GoogleAuthError(
+      'Google Drive OAuth 2.0 credentials not configured (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN missing).',
+      false
+    );
   }
 
-  // Option B: Refresh Token
-  if (config.refreshToken && config.clientId && config.clientSecret) {
-    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+  const now = Date.now();
+  // Return cached token if valid for at least 3 more minutes
+  if (!forceRefresh && cachedAccessToken && tokenExpiresAt > now + 3 * 60 * 1000) {
+    return cachedAccessToken;
+  }
+
+  try {
+    const response = await fetch(TOKEN_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        client_id: config.clientId,
-        client_secret: config.clientSecret,
-        refresh_token: config.refreshToken,
+        client_id: creds.clientId,
+        client_secret: creds.clientSecret,
+        refresh_token: creds.refreshToken,
         grant_type: 'refresh_token',
       }),
     });
 
-    if (!tokenResponse.ok) {
-      const errText = await tokenResponse.text();
-      throw new Error(`Failed to refresh Google token: ${errText}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      let errorJson: any = null;
+      try {
+        errorJson = JSON.parse(errorText);
+      } catch {}
+
+      const errorCode = errorJson?.error || '';
+      const errorDesc = errorJson?.error_description || errorText;
+
+      // Detect expired or revoked authorization specifically
+      if (errorCode === 'invalid_grant' || errorDesc.includes('Token has been expired or revoked')) {
+        cachedAccessToken = null;
+        tokenExpiresAt = 0;
+        throw new GoogleAuthError(
+          'Google Drive authorization has expired or was revoked. Please generate a new refresh token or re-authorize.',
+          true,
+          response.status
+        );
+      }
+
+      throw new GoogleAuthError(
+        `Failed to refresh Google access token (${response.status}): ${errorDesc}`,
+        false,
+        response.status
+      );
     }
 
-    const data = await tokenResponse.json();
-    return data.access_token;
-  }
+    const data = await response.json();
+    cachedAccessToken = data.access_token;
+    // expires_in is in seconds (default 3600 = 1 hour)
+    tokenExpiresAt = now + (data.expires_in || 3600) * 1000;
 
-  throw new Error('Google Drive authentication credentials are not provided.');
+    return cachedAccessToken as string;
+  } catch (err: any) {
+    if (err instanceof GoogleAuthError) {
+      throw err;
+    }
+    throw new GoogleAuthError(`Network error while refreshing Google access token: ${err?.message || err}`, false);
+  }
 }
 
 /**
- * Finds or creates the private "Digital Diary Backups" folder.
+ * Diagnostics check: tests authorization and returns detailed status for the UI.
+ */
+export async function checkGoogleDriveStatus(): Promise<GoogleDriveStatus> {
+  if (!isGoogleDriveConfigured()) {
+    return {
+      configured: false,
+      authorized: false,
+      code: 'NOT_CONFIGURED',
+      message: 'Google Drive credentials are not yet configured in environment variables or GitHub Secrets.',
+    };
+  }
+
+  try {
+    const token = await getFreshAccessToken();
+    // Test a lightweight API call to verify token works
+    const res = await fetch(`${DRIVE_API_BASE}/about?fields=user`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      return {
+        configured: true,
+        authorized: false,
+        code: 'NETWORK_ERROR',
+        message: `Google Drive API error: ${err}`,
+      };
+    }
+
+    const aboutData = await res.json();
+    const userEmail = aboutData?.user?.emailAddress || 'Personal Google Drive';
+
+    return {
+      configured: true,
+      authorized: true,
+      code: 'AUTHENTICATED',
+      message: `Connected to personal Google Drive (${userEmail})`,
+    };
+  } catch (err: any) {
+    if (err instanceof GoogleAuthError && err.isExpiredOrRevoked) {
+      return {
+        configured: true,
+        authorized: false,
+        code: 'EXPIRED_OR_REVOKED',
+        message: 'Google authorization expired or was revoked. Re-authorization required.',
+      };
+    }
+    return {
+      configured: true,
+      authorized: false,
+      code: 'NETWORK_ERROR',
+      message: err?.message || 'Error communicating with Google Drive',
+    };
+  }
+}
+
+/**
+ * Finds or creates the private "Digital Diary Backups" folder in the user's personal Google Drive.
  */
 export async function getOrCreateBackupFolder(accessToken: string): Promise<string> {
   const query = encodeURIComponent(
@@ -175,7 +220,7 @@ export async function getOrCreateBackupFolder(accessToken: string): Promise<stri
     return searchData.files[0].id;
   }
 
-  // Create folder
+  // Create the folder in personal Google Drive
   const createRes = await fetch(`${DRIVE_API_BASE}/files`, {
     method: 'POST',
     headers: {
@@ -205,12 +250,7 @@ export async function uploadBackupToDrive(
   filename: string,
   backupJsonContent: string
 ): Promise<{ success: boolean; fileId: string; filename: string; size: number; checksum: string }> {
-  const config = getGoogleDriveConfig();
-  if (!config) {
-    throw new Error('Google Drive is not configured. Add credentials in environment variables.');
-  }
-
-  const accessToken = await getAccessToken(config);
+  const accessToken = await getFreshAccessToken();
   const folderId = await getOrCreateBackupFolder(accessToken);
 
   const boundary = '-------314159265358979323846';
@@ -252,7 +292,7 @@ export async function uploadBackupToDrive(
 
   const uploadedFile = await uploadRes.json();
 
-  // Verification: Verify the file exists and has content
+  // Verification: Verify the file exists in personal Google Drive and has non-zero size
   const verifyRes = await fetch(`${DRIVE_API_BASE}/files/${uploadedFile.id}?fields=id,name,size,md5Checksum`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
@@ -278,13 +318,12 @@ export async function uploadBackupToDrive(
 }
 
 /**
- * Lists backups from the "Digital Diary Backups" folder.
+ * Lists backups from the "Digital Diary Backups" folder in personal Google Drive.
  */
 export async function listDriveBackups(): Promise<GoogleDriveFile[]> {
-  const config = getGoogleDriveConfig();
-  if (!config) return [];
+  if (!isGoogleDriveConfigured()) return [];
 
-  const accessToken = await getAccessToken(config);
+  const accessToken = await getFreshAccessToken();
   const folderId = await getOrCreateBackupFolder(accessToken);
 
   const query = encodeURIComponent(`'${folderId}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'`);
@@ -315,12 +354,7 @@ export async function listDriveBackups(): Promise<GoogleDriveFile[]> {
  * Downloads a specific backup file content by its Google Drive File ID.
  */
 export async function downloadDriveBackup(fileId: string): Promise<string> {
-  const config = getGoogleDriveConfig();
-  if (!config) {
-    throw new Error('Google Drive is not configured.');
-  }
-
-  const accessToken = await getAccessToken(config);
+  const accessToken = await getFreshAccessToken();
   const downloadRes = await fetch(`${DRIVE_API_BASE}/files/${fileId}?alt=media`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
@@ -333,46 +367,34 @@ export async function downloadDriveBackup(fileId: string): Promise<string> {
 }
 
 /**
- * Prunes older backups to respect Google Drive storage limits
- * while maintaining daily, monthly, and yearly recovery points.
+ * Prunes older backups to respect Google Drive free storage
+ * while maintaining daily, weekly, monthly, and yearly recovery points.
  * CRITICAL RULE: NEVER deletes the last valid backup!
  */
 export async function pruneOldBackups(files: GoogleDriveFile[]): Promise<{ deletedCount: number; preservedCount: number }> {
   if (files.length <= 5) {
-    // Always preserve at least 5 backups
     return { deletedCount: 0, preservedCount: files.length };
   }
 
-  const config = getGoogleDriveConfig();
-  if (!config) return { deletedCount: 0, preservedCount: files.length };
-
-  const accessToken = await getAccessToken(config);
+  const accessToken = await getFreshAccessToken();
   const now = Date.now();
   const ONE_DAY = 24 * 60 * 60 * 1000;
   const SEVEN_DAYS = 7 * ONE_DAY;
   const THIRTY_DAYS = 30 * ONE_DAY;
 
-  // Keep:
-  // - All backups from last 7 days
-  // - 1 backup per week for 7-30 days
-  // - 1 backup per month for >30 days
-  // - Most recent backup ALWAYS
   const keepIds = new Set<string>();
-  keepIds.add(files[0].id); // Always keep newest backup
+  keepIds.add(files[0].id); // Always keep the newest backup
 
   const weeklyBuckets = new Set<string>();
   const monthlyBuckets = new Set<string>();
-
   const toDelete: GoogleDriveFile[] = [];
 
   for (const file of files) {
     const age = now - new Date(file.createdTime).getTime();
 
     if (age <= SEVEN_DAYS) {
-      // Keep all in last 7 days
       keepIds.add(file.id);
     } else if (age <= THIRTY_DAYS) {
-      // Weekly bucket
       const weekKey = `${new Date(file.createdTime).getFullYear()}-W${Math.floor(new Date(file.createdTime).getDate() / 7)}`;
       if (!weeklyBuckets.has(weekKey)) {
         weeklyBuckets.add(weekKey);
@@ -381,7 +403,6 @@ export async function pruneOldBackups(files: GoogleDriveFile[]): Promise<{ delet
         toDelete.push(file);
       }
     } else {
-      // Monthly bucket
       const monthKey = `${new Date(file.createdTime).getFullYear()}-${new Date(file.createdTime).getMonth()}`;
       if (!monthlyBuckets.has(monthKey)) {
         monthlyBuckets.add(monthKey);

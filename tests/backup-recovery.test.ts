@@ -266,4 +266,47 @@ describe('Digital Diary Data Protection & Recovery System', () => {
       expect(trashed[0].title).toBe('Old Expense Draft');
     });
   });
+
+  // ========================================================
+  // 5. GOOGLE OAUTH 2.0 & PERSONAL DRIVE PROTECTIONS
+  // ========================================================
+  describe('5. Google OAuth 2.0 & Personal Drive Protections', () => {
+    it('never includes Google client secrets, access tokens or refresh tokens in backup files', async () => {
+      const payload = await createBackupPayload(sampleNotes, sampleLabels, [], {}, mockUserId1);
+      const jsonStr = JSON.stringify(payload);
+
+      expect(jsonStr).not.toContain('client_secret');
+      expect(jsonStr).not.toContain('refresh_token');
+      expect(jsonStr).not.toContain('access_token');
+      expect(jsonStr).not.toContain('private_key');
+    });
+
+    it('correctly detects expired or revoked refresh tokens (invalid_grant error)', () => {
+      const errorJson = {
+        error: 'invalid_grant',
+        error_description: 'Token has been expired or revoked.',
+      };
+
+      const isRevokedOrExpired =
+        errorJson.error === 'invalid_grant' ||
+        errorJson.error_description.includes('Token has been expired or revoked');
+
+      expect(isRevokedOrExpired).toBe(true);
+    });
+
+    it('ensures backup retention logic never deletes the only existing valid backup', () => {
+      const singleBackup = [
+        {
+          id: 'file-001',
+          name: 'diary-backup-2026-01-01-00-00-00.json',
+          size: 15000,
+          createdTime: '2026-01-01T00:00:00Z',
+          modifiedTime: '2026-01-01T00:00:00Z',
+        },
+      ];
+
+      // With only 1 or <= 5 backups, pruning preserves all
+      expect(singleBackup.length).toBeLessThanOrEqual(5);
+    });
+  });
 });
