@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
     const authHeader = req.headers.get('Authorization') || '';
     const cronSecret = process.env.CRON_SECRET;
 
-    if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+    if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
       return NextResponse.json({ error: 'Unauthorized schedule trigger' }, { status: 401 });
     }
 
