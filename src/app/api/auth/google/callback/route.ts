@@ -4,12 +4,40 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function GET(req: NextRequest) {
+  // Task 5: Disable refresh token display and local OAuth setup routes in production
+  if (process.env.NODE_ENV === 'production') {
+    return new NextResponse(
+      renderHtmlResponse({
+        success: false,
+        title: 'OAuth Setup Disabled in Production',
+        message:
+          'For security, browser-based OAuth setup and token display are disabled in production. Please set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REFRESH_TOKEN in your hosting provider environment variables.',
+      }),
+      { status: 403, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+    );
+  }
+
   const searchParams = req.nextUrl.searchParams;
   const code = searchParams.get('code');
   const error = searchParams.get('error');
+  const state = searchParams.get('state');
+  const storedState = req.cookies.get('google_oauth_state')?.value;
+
+  // Task 4: State parameter validation (CSRF protection)
+  if (!state || !storedState || state !== storedState) {
+    return new NextResponse(
+      renderHtmlResponse({
+        success: false,
+        title: 'Invalid OAuth State (CSRF Protection Failed)',
+        message:
+          'The OAuth state parameter is invalid or has expired. Please initiate authorization again from Settings.',
+      }),
+      { status: 403, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+    );
+  }
 
   if (error) {
-    return new NextResponse(
+    const res = new NextResponse(
       renderHtmlResponse({
         success: false,
         title: 'Google Authorization Cancelled',
@@ -17,10 +45,12 @@ export async function GET(req: NextRequest) {
       }),
       { headers: { 'Content-Type': 'text/html; charset=utf-8' } }
     );
+    res.cookies.delete('google_oauth_state');
+    return res;
   }
 
   if (!code) {
-    return new NextResponse(
+    const res = new NextResponse(
       renderHtmlResponse({
         success: false,
         title: 'Missing Authorization Code',
@@ -28,6 +58,8 @@ export async function GET(req: NextRequest) {
       }),
       { headers: { 'Content-Type': 'text/html; charset=utf-8' } }
     );
+    res.cookies.delete('google_oauth_state');
+    return res;
   }
 
   const clientId = process.env.GOOGLE_CLIENT_ID;
@@ -63,7 +95,7 @@ export async function GET(req: NextRequest) {
 
     if (!tokenRes.ok || !tokenData.refresh_token) {
       const errMsg = tokenData.error_description || tokenData.error || 'Failed to exchange authorization code';
-      return new NextResponse(
+      const res = new NextResponse(
         renderHtmlResponse({
           success: false,
           title: 'Authorization Exchange Failed',
@@ -71,11 +103,13 @@ export async function GET(req: NextRequest) {
         }),
         { headers: { 'Content-Type': 'text/html; charset=utf-8' } }
       );
+      res.cookies.delete('google_oauth_state');
+      return res;
     }
 
     const refreshToken = tokenData.refresh_token;
 
-    return new NextResponse(
+    const res = new NextResponse(
       renderHtmlResponse({
         success: true,
         title: 'Google Drive Successfully Authorized! 🎉',
@@ -84,8 +118,10 @@ export async function GET(req: NextRequest) {
       }),
       { headers: { 'Content-Type': 'text/html; charset=utf-8' } }
     );
+    res.cookies.delete('google_oauth_state');
+    return res;
   } catch (err: any) {
-    return new NextResponse(
+    const res = new NextResponse(
       renderHtmlResponse({
         success: false,
         title: 'Connection Error',
@@ -93,6 +129,8 @@ export async function GET(req: NextRequest) {
       }),
       { headers: { 'Content-Type': 'text/html; charset=utf-8' } }
     );
+    res.cookies.delete('google_oauth_state');
+    return res;
   }
 }
 

@@ -45,7 +45,7 @@ export function SettingsModal({ isOpen, onClose, onOpenAuth }: SettingsModalProp
     databaseWarning,
     restoreFromBackupData,
   } = useNotes();
-  const { user, signOut, isConfigured } = useAuth();
+  const { user, session, signOut, isConfigured } = useAuth();
 
   const [activeTab, setActiveTab] = useState<'main' | 'history' | 'restore' | 'verify'>('main');
 
@@ -83,7 +83,11 @@ export function SettingsModal({ isOpen, onClose, onOpenAuth }: SettingsModalProp
   // Check Google Drive configuration status on mount
   useEffect(() => {
     if (isOpen) {
-      fetch('/api/backup/list')
+      const authHeaders: Record<string, string> = {};
+      if (session?.access_token) {
+        authHeaders['Authorization'] = `Bearer ${session.access_token}`;
+      }
+      fetch('/api/backup/list', { headers: authHeaders })
         .then((res) => res.json())
         .then((data) => {
           setIsDriveConfigured(Boolean(data.googleDriveConfigured && data.googleDriveAuthorized));
@@ -147,9 +151,13 @@ export function SettingsModal({ isOpen, onClose, onOpenAuth }: SettingsModalProp
       // Send to server to upload to Google Drive if configured
       let driveUploaded = false;
       try {
+        const backupHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (session?.access_token) {
+          backupHeaders['Authorization'] = `Bearer ${session.access_token}`;
+        }
         const res = await fetch('/api/backup/create', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: backupHeaders,
           body: JSON.stringify({
             notes,
             labels,

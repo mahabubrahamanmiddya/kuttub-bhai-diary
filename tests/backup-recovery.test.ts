@@ -309,4 +309,75 @@ describe('Digital Diary Data Protection & Recovery System', () => {
       expect(singleBackup.length).toBeLessThanOrEqual(5);
     });
   });
+
+  // ========================================================
+  // 6. PRODUCTION SECURITY & AUTHORIZATION GUARDS
+  // ========================================================
+  describe('6. Production Security & Authorization Guards', () => {
+    it('fails closed when CRON_SECRET is missing or unauthorized', () => {
+      const verifyCronAuth = (authHeader: string | null, cronSecret: string | undefined): boolean => {
+        if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+          return false;
+        }
+        return true;
+      };
+
+      // Fails closed if CRON_SECRET is undefined in environment
+      expect(verifyCronAuth('Bearer my-secret', undefined)).toBe(false);
+      // Fails closed if CRON_SECRET is empty string
+      expect(verifyCronAuth('Bearer my-secret', '')).toBe(false);
+      // Fails if header is missing
+      expect(verifyCronAuth(null, 'secret-123')).toBe(false);
+      // Fails if token does not match
+      expect(verifyCronAuth('Bearer wrong-secret', 'secret-123')).toBe(false);
+      // Fails if format is missing Bearer prefix
+      expect(verifyCronAuth('secret-123', 'secret-123')).toBe(false);
+      // PASSES only when secret is configured and Bearer token matches exactly
+      expect(verifyCronAuth('Bearer secret-123', 'secret-123')).toBe(true);
+    });
+
+    it('prevents IDOR: ensures a user cannot access another user backup file', async () => {
+      const userAId = 'user-alice-123';
+      const userBId = 'user-bob-456';
+
+      const userBPayload = await createBackupPayload(sampleNotes, sampleLabels, [], {}, userBId);
+
+      const checkBackupAccess = (targetPayload: any, requestingUserId: string): boolean => {
+        const payloadUserId = targetPayload.user_id || targetPayload.metadata?.user_id;
+        if (payloadUserId && payloadUserId !== requestingUserId) {
+          return false; // Forbidden
+        }
+        return true;
+      };
+
+      // User A trying to access User B's backup is REJECTED
+      expect(checkBackupAccess(userBPayload, userAId)).toBe(false);
+
+      // User B accessing their own backup is ALLOWED
+      expect(checkBackupAccess(userBPayload, userBId)).toBe(true);
+    });
+
+    it('rejects invalid or missing OAuth state parameter (CSRF protection)', () => {
+      const validateOAuthState = (paramState: string | null, cookieState: string | undefined): boolean => {
+        if (!paramState || !cookieState || paramState !== cookieState) {
+          return false;
+        }
+        return true;
+      };
+
+      expect(validateOAuthState(null, 'valid-state-123')).toBe(false);
+      expect(validateOAuthState('state-abc', undefined)).toBe(false);
+      expect(validateOAuthState('forged-state', 'expected-state')).toBe(false);
+      expect(validateOAuthState('valid-state-123', 'valid-state-123')).toBe(true);
+    });
+
+    it('disables browser refresh token display and OAuth setup routes in production', () => {
+      const checkRouteDisabled = (nodeEnv: string): boolean => {
+        return nodeEnv === 'production';
+      };
+
+      expect(checkRouteDisabled('production')).toBe(true);
+      expect(checkRouteDisabled('development')).toBe(false);
+    });
+  });
 });

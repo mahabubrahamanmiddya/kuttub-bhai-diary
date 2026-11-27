@@ -2,12 +2,19 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createBackupPayload, generateBackupFilename, verifyBackupIntegrity } from '@/lib/backup/crypto';
 import { uploadBackupToDrive, isGoogleDriveConfigured } from '@/lib/backup/google-drive';
 import { createClient } from '@supabase/supabase-js';
+import { getAuthenticatedUser } from '@/lib/auth/server';
+import { isSupabaseConfigured } from '@/lib/supabase/client';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
   try {
+    const authUser = await getAuthenticatedUser(req);
+    if (isSupabaseConfigured() && !authUser) {
+      return NextResponse.json({ error: 'Unauthorized: Authentication required to create backups' }, { status: 401 });
+    }
+
     const body = await req.json();
     const { notes, labels, versions, preferences, userId, uploadToDrive = true } = body;
 
@@ -15,9 +22,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing notes array' }, { status: 400 });
     }
 
+    // Force authenticated user ID when logged in to prevent user spoofing
+    const effectiveUserId = authUser ? authUser.id : (userId || 'local-user');
+
     // Never upload an empty backup caused by failed DB read if notes existed!
     const filename = generateBackupFilename();
-    const payload = await createBackupPayload(notes, labels || [], versions || [], preferences || {}, userId);
+    const payload = await createBackupPayload(notes, labels || [], versions || [], preferences || {}, effectiveUserId);
 
     // Verify integrity of our own generated backup before proceeding
     const verification = await verifyBackupIntegrity(payload);
@@ -41,10 +51,10 @@ export async function POST(req: NextRequest) {
           process.env.SUPABASE_SERVICE_ROLE_KEY ||
           process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
           process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-        if (supabaseUrl && serviceKey && userId) {
+        if (supabaseUrl && serviceKey && effectiveUserId) {
           const supabase = createClient(supabaseUrl, serviceKey);
           await supabase.from('backups_metadata').insert({
-            user_id: userId,
+            user_id: effectiveUserId,
             filename,
             storage_location: 'google_drive',
             file_size_bytes: driveResult.size,
