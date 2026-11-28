@@ -4,7 +4,10 @@
  * INTERACTIVE GOOGLE OAUTH 2.0 REFRESH TOKEN GENERATOR
  *
  * Use this script to authorize your personal Google Drive account and obtain
- * a permanent Refresh Token for unattended daily backups and manual backups.
+ * an offline Refresh Token for unattended daily backups and manual backups.
+ * Note: Google OAuth refresh tokens are not permanent; they expire if unused
+ * for 6 months, if the account password is changed, if revoked by the user,
+ * or after 7 days if the OAuth consent screen remains in "Testing" mode.
  *
  * Usage:
  *   node scripts/get-google-refresh-token.mjs
@@ -109,7 +112,7 @@ async function main() {
         );
         server.close();
 
-        console.log('\nExchanging authorization code for permanent Refresh Token...');
+        console.log('\nExchanging authorization code for offline Refresh Token...');
 
         const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
           method: 'POST',

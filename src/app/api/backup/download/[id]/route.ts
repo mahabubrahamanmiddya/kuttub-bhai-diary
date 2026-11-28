@@ -7,9 +7,13 @@ import { createClient } from '@supabase/supabase-js';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(
+  req: NextRequest,
+  context: { params: { id: string } | Promise<{ id: string }> }
+) {
   try {
-    const fileId = params.id;
+    const resolvedParams = await Promise.resolve(context.params);
+    const fileId = resolvedParams?.id;
     if (!fileId) {
       return NextResponse.json({ error: 'Missing file id' }, { status: 400 });
     }

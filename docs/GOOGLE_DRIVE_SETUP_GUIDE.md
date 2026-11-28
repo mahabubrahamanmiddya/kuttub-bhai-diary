@@ -73,7 +73,7 @@ This guide provides step-by-step instructions for connecting your **free persona
 
 ---
 
-## ⚡ Step 5: Generate Your Permanent Refresh Token
+## ⚡ Step 5: Generate Your Google OAuth Refresh Token
 
 You can generate your refresh token in either of two ways:
 
@@ -85,28 +85,29 @@ node scripts/get-google-refresh-token.mjs
 1. Paste your `Client ID` and `Client Secret` when prompted.
 2. It prints an authorization URL. Open it in your browser.
 3. Select your Google account and click **"Continue"**.
-4. The terminal immediately outputs your permanent **`GOOGLE_REFRESH_TOKEN`**!
+4. The terminal immediately outputs your offline **`GOOGLE_REFRESH_TOKEN`**!
 
-### Option B: Using the In-App Web Flow
+### Option B: Using the In-App Web Flow (Development Only)
 1. Add `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` to your `.env.local`.
 2. Start the app: `npm run dev`.
 3. Open `http://localhost:3000`, go to **Settings** > **Backup & Sync** > click **"Connect Google Drive"** (or open `http://localhost:3000/api/auth/google/authorize`).
 4. Authorize with your Google account.
 5. A confirmation screen appears with your **Refresh Token** and a 1-click **Copy** button.
+*(Note: For security reasons, this route is disabled in production environments).*
 
 ---
 
-## 🔐 Step 6: Save Credentials in `.env.local` & GitHub Secrets
+## 🔐 Step 6: Save Credentials in `.env.local`, Vercel & GitHub Secrets
 
-### In `.env.local`:
+### In `.env.local` (Local Development):
 ```env
 GOOGLE_CLIENT_ID="your-client-id.apps.googleusercontent.com"
 GOOGLE_CLIENT_SECRET="your-client-secret"
-GOOGLE_REFRESH_TOKEN="1//04your-permanent-refresh-token..."
+GOOGLE_REFRESH_TOKEN="1//04your-offline-refresh-token..."
 ```
 
-### In GitHub Repository Secrets:
-*(For automated daily unattended backups)*
+### In GitHub Repository Secrets (Automated Daily Backups):
+*(For unattended daily backups via GitHub Actions)*
 1. Go to your GitHub repository > **Settings** > **Secrets and variables** > **Actions**.
 2. Add:
    - `GOOGLE_CLIENT_ID`
@@ -117,14 +118,42 @@ GOOGLE_REFRESH_TOKEN="1//04your-permanent-refresh-token..."
 
 ---
 
-## ⚠️ Important Scheduler & Inactivity Limitations to Know
+## 🔒 Security Best Practices: Production vs Preview Deployments
 
-1. **7-Day Expiration in "Testing" Mode**:
-   - If your OAuth consent screen is left in "Testing" mode, Google automatically expires refresh tokens after 7 days.
-   - **Fix**: In Google Cloud Console > APIs & Services > OAuth consent screen, click **"Publish App"** to switch it to **"In production"**.
+> [!WARNING]
+> **Never add production OAuth refresh tokens or Supabase service role keys to unauthenticated preview deployments!**
+> 
+> - **Preview Environment Isolation**: Vercel preview URLs (e.g. `kuttub-bhai-diary-git-feature-*.vercel.app`) are publicly reachable by default if SSO is not enabled. If production secrets are assigned to the "Preview" environment scope, any person opening a preview link could potentially trigger backups or read metadata.
+> - **Recommended Scope Configuration in Vercel**:
+>   - Set sensitive secrets (`GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`, `SUPABASE_SERVICE_ROLE_KEY`, `CRON_SECRET`) strictly for the **Production** environment.
+>   - Leave them unassigned or assign dedicated staging/mock credentials for **Preview** and **Development** environments.
+
+---
+
+## 🛡️ Backup Confidentiality vs. SHA-256 Integrity Verification
+
+> [!IMPORTANT]
+> **Understanding SHA-256 vs Encryption**:
+> - **SHA-256 is an Integrity Check, NOT Encryption**: The SHA-256 checksum generated during backup creation provides cryptographic proof that the backup payload was not altered, truncated, corrupted, or tampered with in transit or storage. It **does not** encrypt the payload contents.
+> - **Confidentiality & Access Control**: Backup JSON payloads are stored in your personal Google Drive in the `Digital Diary Backups` folder. Confidentiality is enforced by Google's OAuth 2.0 access control (restricted to the user's account and the app's scoped credentials) and Google Cloud's server-side encryption at rest. If client-side end-to-end payload encryption is ever desired in future releases, it should use AES-GCM-256 with a user-held passphrase separate from the SHA-256 integrity hash.
+
+---
+
+## ⚠️ Refresh Token Lifecycle, Inactivity & Expiration Risks
+
+> [!CAUTION]
+> **Google OAuth refresh tokens are NOT permanent.** They can expire or be revoked under any of the following circumstances:
+
+1. **Consent Screen in "Testing" Mode (7-Day Expiration)**:
+   - If your OAuth consent screen is left with Publishing Status = **"Testing"**, Google automatically expires all issued refresh tokens after **7 days**, regardless of usage.
+   - **Remedy**: Go to Google Cloud Console > **APIs & Services** > **OAuth consent screen** and click **"Publish App"** to set Publishing Status to **"In production"**. Personal use does not require Google verification.
 2. **6-Month Inactivity Rule**:
-   - A Google refresh token will expire if it is not used at all for **6 consecutive months**. Because our GitHub Actions workflow runs every day at 02:00 UTC, the token is refreshed daily and will **never** expire due to inactivity.
-3. **Password Changes**:
-   - If you change your Google account password, Google revokes active OAuth tokens for security. You will simply need to re-authorize once using `node scripts/get-google-refresh-token.mjs`.
-4. **Revocation Detection**:
-   - If authorization ever expires or is revoked, the application automatically flags it in the Settings UI as **"⚠️ Authorization Expired"** and provides a one-click **"Re-authorize"** button.
+   - A refresh token expires if it is not exchanged for a fresh access token for **6 consecutive months**. Daily scheduled backups via GitHub Actions prevent inactivity expiration by refreshing tokens daily.
+3. **Password Changes & Security Resets**:
+   - Changing your Google Account password automatically revokes all existing refresh tokens associated with that account. You must re-run `node scripts/get-google-refresh-token.mjs` to obtain a new token.
+4. **User-Initiated Revocation**:
+   - If you disconnect the app in [Google Account Security Permissions](https://myaccount.google.com/permissions), the token is immediately invalidated.
+5. **Token Count Limit**:
+   - Google enforces a limit of 100 active refresh tokens per Google Account per OAuth client ID. Generating more than 100 tokens causes the oldest token to silently expire.
+6. **Revocation Detection in Application**:
+   - If authorization fails with `invalid_grant` ("Token has been expired or revoked"), the application flags the status as **"⚠️ Authorization Expired"** and prompts for re-authorization.
